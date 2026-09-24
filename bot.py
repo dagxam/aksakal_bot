@@ -137,6 +137,8 @@ class AksakalBot:
         ]
         if any(re.search(p, low) for p in salam_patterns):
             return "salam"
+        if re.search(r"^\s*(?:асс?алам|салам)(?:\s|[!,.?]|$)", low):
+            return "salam"
 
         generic_patterns = [
             r"^\s*привет(?:ик|ики)?\b",
@@ -283,26 +285,15 @@ class AksakalBot:
             self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
             feedback = self.detect_address_feedback(text)
             if feedback:
-                old_task = self.pending_reply_tasks.pop(chat_id, None)
-                if old_task and not old_task.done():
-                    old_task.cancel()
                 if feedback["profile"]:
                     self.db.set_profile(chat_id, user_id, feedback["profile"])
                 for token in feedback["avoid"]:
                     self.db.avoid_address(chat_id, user_id, token)
-                await self.roast(
-                    chat_id,
-                    user_id,
-                    "пользователь поправил обращение. Коротко подшути над поправкой, покажи, что понял, и больше не используй запрещённое обращение",
-                    mood="playful",
-                    reply_to_message_id=msg.get("message_id"),
-                    source_text=text,
-                    source_kind="profile_correction",
-                    ignore_cooldown=True,
-                )
-                return
 
         if text.startswith("/"):
+            old_task = self.pending_reply_tasks.pop(chat_id, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
             await self.handle_command(msg, text)
             return
 
@@ -610,8 +601,16 @@ class AksakalBot:
                     "Жёсткость формулировки должна точно соответствовать выбранному уровню."
                 )
             else:
+                feedback = self.detect_address_feedback(source_text)
                 greeting = self.detect_greeting_style(source_text)
-                if greeting == "generic":
+                if feedback:
+                    mood = "playful"
+                    source_kind = "profile_correction"
+                    reason = (
+                        "пользователь поправил обращение к себе. Ответь только на эту поправку: коротко подшути, "
+                        "покажи, что понял, и не используй обращение, которое он только что отверг."
+                    )
+                elif greeting == "generic":
                     mood = "playful"
                     source_kind = "greeting_correction"
                     reason = (
