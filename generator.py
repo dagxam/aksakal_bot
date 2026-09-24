@@ -11,18 +11,42 @@ FALLBACKS = {
         1: [
             "{u} — сегодня ты подозрительно серьёзный, жи есть. Это временно?",
             "{u} — мысль хорошая, не испорть продолжением.",
+            "{u} — спокойно, уцы, пока всё звучит разумно.",
+            "{u} — вот сейчас нормально сказал, не сглазь.",
+            "{u} — редкий случай: даже спорить пока не хочется.",
+            "{u} — мысль понял. Продолжай, пока всё не испортил.",
+            "{u} — сегодня без суеты идёшь, даже непривычно.",
+            "{u} — нормально начал. Финал не подведи.",
         ],
         2: [
             "{u} — уцы, уверенности много. Теперь осталось найти основания.",
             "{u} — ты так молчишь, будто мнение ещё проходит согласование.",
+            "{u} — хабар пошёл уверенный, факты догонят потом?",
+            "{u} — ты опять начал так, будто уже всех переубедил.",
+            "{u} — спокойно, вацок, мысль ещё можно спасти.",
+            "{u} — ты сейчас мнение выдал или объявление сделал?",
+            "{u} — всё красиво сказал, осталось понять зачем.",
+            "{u} — ещё немного уверенности — и сам себе поверишь окончательно.",
         ],
         3: [
             "{u} — аргументы закончились, а хабар всё идёт.",
             "{u} — ты сейчас очень смело идёшь туда, где фактов уже нет.",
+            "{u} — уцы, ты спор уже не ведёшь, ты его тащишь на характере.",
+            "{u} — факты вышли, а ты всё ещё на сцене.",
+            "{u} — ты сейчас не объясняешь, ты давишь уверенностью.",
+            "{u} — ещё одно сообщение, и твоя версия станет семейной легендой.",
+            "{u} — моросишь уже красиво, почти профессионально.",
+            "{u} — ты как всегда: сначала уверенно, потом разберёмся.",
         ],
         4: [
             "{u} — ле, если бы уверенность считалась доказательством, спор уже закрыли бы.",
             "{u} — мысль закончилась раньше сообщения, но ты героически продолжил.",
+            "{u} — уцы, ты сейчас не споришь, ты выживаешь на одной наглости.",
+            "{u} — фактов ноль, подачи как на свадьбе.",
+            "{u} — ты эту мысль так долго толкаешь, она уже сама устала.",
+            "{u} — брат, тут даже твоя уверенность просит сделать паузу.",
+            "{u} — ещё чуть-чуть и спор начнёт извиняться перед всеми.",
+            "{u} — ты так уверенно несёшь это, будто возврат не предусмотрен.",
         ],
     },
     "supportive": [
@@ -192,6 +216,13 @@ class PhraseGenerator:
             who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
             transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
+        last_message = ""
+        for m in reversed(context):
+            if m.get("kind") == "message" and (m.get("content") or "").strip():
+                who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
+                last_message = f"{who}: {m.get('content','').strip()}"
+                break
+        last_message = last_message or "(нет текстового сообщения)"
         personal_words = personal_words or []
         group_words = group_words or []
         personal_lexicon = ", ".join(x["token"] for x in personal_words[:12]) or "(ещё не накоплен)"
@@ -226,8 +257,17 @@ class PhraseGenerator:
 Правило жёсткости: {intensity_rules[max(1, min(4, level))]}
 Профиль стиля пользователя: {profile}.
 
-Последние сообщения:
+ГЛАВНОЕ СООБЩЕНИЕ, НА КОТОРОЕ ТЫ ОТВЕЧАЕШЬ ПРЯМО СЕЙЧАС:
+{last_message}
+
+Контекст до него нужен только чтобы понять тему, отношения и шутку:
 {transcript_text}
+
+КРИТИЧЕСКОЕ ПРАВИЛО:
+- Ответ должен иметь прямую смысловую связь именно с ГЛАВНЫМ СООБЩЕНИЕМ.
+- Если человек пишет про машину — отвечай про машину; про работу — про работу; про отношения — про отношения.
+- Не выдавай универсальную фразу, если из последнего сообщения можно сделать конкретный ответ.
+- Можно использовать факт только из текущей переписки и памяти этой группы, ничего не выдумывай.
 
 Память речи:
 - Частые слова и выражения именно этого участника: {personal_lexicon}
@@ -257,13 +297,20 @@ class PhraseGenerator:
 - Не используй слово «Аксакал» внутри самой реплики.
 """.strip()
 
-        payload = {"model": self.model, "input": prompt, "max_output_tokens": 90}
+        payload = {
+            "model": self.model,
+            "input": prompt,
+            "max_output_tokens": 120,
+            "reasoning": {"effort": "low"},
+        }
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         try:
             timeout = aiohttp.ClientTimeout(total=25)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post("https://api.openai.com/v1/responses", json=payload, headers=headers) as resp:
                     if resp.status >= 300:
+                        body = await resp.text()
+                        print(f"OpenAI API error {resp.status}: {body[:1000]}")
                         return self.fallback(target, mood, level)
                     data = await resp.json()
             text = self._extract_text(data).strip().replace("\n", " ")
@@ -272,7 +319,8 @@ class PhraseGenerator:
             if not text.startswith(f"{mention} — "):
                 text = f"{mention} — {text.lstrip('-—: ')}"
             return text[:500]
-        except Exception:
+        except Exception as e:
+            print(f"OpenAI generation error: {type(e).__name__}: {e}")
             return self.fallback(target, mood, level)
 
     @staticmethod
