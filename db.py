@@ -52,6 +52,18 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_chat_seen ON users(chat_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS learned_words (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL DEFAULT 0,
+    token TEXT NOT NULL,
+    count INTEGER NOT NULL DEFAULT 1,
+    last_seen_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, user_id, token)
+);
+
+CREATE INDEX IF NOT EXISTS idx_learned_words_chat_count
+ON learned_words(chat_id, user_id, count DESC);
 """
 
 
@@ -149,6 +161,40 @@ class Database:
             rows = conn.execute(
                 "SELECT * FROM users WHERE chat_id=? AND last_seen_at>=? ORDER BY last_seen_at DESC",
                 (chat_id, cutoff),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def learn_tokens(self, chat_id: int, user_id: int, tokens: list[str]):
+        now = int(time.time())
+        cleaned = [t.strip().lower()[:64] for t in tokens if t and 2 <= len(t.strip()) <= 64]
+        if not cleaned:
+            return
+        with self.connect() as conn:
+            for token in cleaned:
+                for owner_id in (0, user_id):
+                    conn.execute(
+                        """
+                        INSERT INTO learned_words(chat_id,user_id,token,count,last_seen_at)
+                        VALUES(?,?,?,?,?)
+                        ON CONFLICT(chat_id,user_id,token) DO UPDATE SET
+                            count=count+1,
+                            last_seen_at=excluded.last_seen_at
+                        """,
+                        (chat_id, owner_id, token, 1, now),
+                    )
+
+    def top_learned_words(self, chat_id: int, user_id: int | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        owner_id = 0 if user_id is None else int(user_id)
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT token,count,last_seen_at
+                FROM learned_words
+                WHERE chat_id=? AND user_id=?
+                ORDER BY count DESC, last_seen_at DESC
+                LIMIT ?
+                """,
+                (chat_id, owner_id, limit),
             ).fetchall()
             return [dict(r) for r in rows]
 
