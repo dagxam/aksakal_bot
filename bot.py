@@ -264,7 +264,7 @@ class AksakalBot:
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {'включён' if self.generator.enabled else 'fallback без AI'}\n"
-                f"Жёсткость: {('авто до ' + str(c.get('roast_level',3)) + '/4') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
+                f"Жёсткость: {('AUTO — сам выбираю 1–' + str(c.get('roast_level',3)) + '/4 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
                 f"Пауза: {c.get('min_interval_minutes',10)} мин\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
