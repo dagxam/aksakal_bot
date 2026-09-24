@@ -261,7 +261,7 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
-                f"AI: {'включён' if self.generator.enabled else 'fallback без AI'}\n"
+                f"AI: {'включён — ответы генерируются по контексту' if self.generator.enabled else 'НЕ ВКЛЮЧЁН — сейчас используются готовые fallback-фразы'}\n"
                 f"Жёсткость: {('AUTO — сам выбираю 1–' + str(c.get('roast_level',3)) + '/4 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
                 f"Пауза: {c.get('min_interval_minutes',10)} мин\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
