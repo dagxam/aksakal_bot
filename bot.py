@@ -53,13 +53,44 @@ class AksakalBot:
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
+            # Long polling не работает, пока у бота установлен webhook.
+            await tg.call("deleteWebhook", drop_pending_updates=False)
+
             me = await tg.call("getMe")
+            await self.configure_bot_profile()
             print(f"Аксакал запущен: @{me.get('username')}")
             worker = asyncio.create_task(self.silence_worker())
             try:
                 await self.poll()
             finally:
                 worker.cancel()
+
+    async def configure_bot_profile(self):
+        assert self.tg
+        commands = [
+            {"command": "start", "description": "Как подключить Аксакала"},
+            {"command": "help", "description": "Помощь и команды"},
+            {"command": "test", "description": "Проверить, что бот отвечает"},
+            {"command": "status", "description": "Состояние Аксакала в группе"},
+            {"command": "aksakal", "description": "Настройки группы"},
+            {"command": "roast", "description": "Подколоть участника ответом на его сообщение"},
+            {"command": "level", "description": "Максимальная жёсткость 1–4 (админ)"},
+            {"command": "frequency", "description": "Минимальная пауза в минутах (админ)"},
+            {"command": "silence", "description": "Когда тормошить молчунов (админ)"},
+            {"command": "on", "description": "Включить Аксакала (админ)"},
+            {"command": "off", "description": "Выключить Аксакала (админ)"},
+            {"command": "profile", "description": "Стиль: male / female / neutral"},
+        ]
+        await self.tg.call("setMyCommands", commands=commands)
+        await self.tg.call("setMyName", name="Аксакал")
+        await self.tg.call(
+            "setMyDescription",
+            description="Живой участник группы: понимает тему разговора, подкалывает, поддерживает, успокаивает и оживляет чат.",
+        )
+        await self.tg.call(
+            "setMyShortDescription",
+            short_description="Подколы, поддержка, мудрость и живой чат.",
+        )
 
     async def poll(self):
         assert self.tg
@@ -86,12 +117,50 @@ class AksakalBot:
             await self.handle_message(update["message"])
         elif "message_reaction" in update:
             await self.handle_reaction(update["message_reaction"])
+        elif "my_chat_member" in update:
+            await self.handle_my_chat_member(update["my_chat_member"])
+
+    async def handle_my_chat_member(self, upd: dict[str, Any]):
+        if not self.tg:
+            return
+        chat = upd.get("chat", {})
+        if chat.get("type") not in {"group", "supergroup"}:
+            return
+        old_status = (upd.get("old_chat_member") or {}).get("status")
+        new_status = (upd.get("new_chat_member") or {}).get("status")
+        if old_status in {"left", "kicked"} and new_status in {"member", "administrator"}:
+            chat_id = int(chat["id"])
+            self.db.ensure_chat(
+                chat_id,
+                chat.get("title"),
+                config.default_roast_level,
+                config.min_bot_interval_minutes,
+                config.silence_trigger_minutes,
+            )
+            await self.tg.send(
+                chat_id,
+                "Аксакал на месте. Для проверки напиши /test. "
+                "Чтобы я видел обычные сообщения и реакции, сделай меня администратором "
+                "и отключи Privacy Mode через @BotFather → /setprivacy → Disable.",
+            )
 
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
-            if msg.get("text", "").startswith("/start") and self.tg:
-                await self.tg.send(chat["id"], "Добавь меня в группу, дай права администратора и отключи Privacy Mode у BotFather.")
+            text = msg.get("text", "")
+            if text.startswith("/start") and self.tg:
+                await self.tg.send(
+                    chat["id"],
+                    "Добавь меня в группу, назначь администратором и отключи Privacy Mode: "
+                    "@BotFather → /setprivacy → выбери бота → Disable. "
+                    "После этого в группе напиши /test.",
+                )
+            elif text.startswith("/help") and self.tg:
+                await self.tg.send(
+                    chat["id"],
+                    "Проверка: /test\nВ группе: /status, /aksakal, /roast. "
+                    "Админ-настройки: /level, /frequency, /silence, /on, /off.",
+                )
             return
 
         chat_id = int(chat["id"])
@@ -147,9 +216,37 @@ class AksakalBot:
         cmd = cmd.split("@")[0].lower()
         arg = rest[0].strip() if rest else ""
 
-        if cmd == "/aksakal":
+        if cmd in {"/help", "/start"}:
+            await self.tg.send(
+                chat_id,
+                "Команды Аксакала:\n"
+                "/test — мгновенная проверка\n"
+                "/status — состояние в группе\n"
+                "/aksakal — настройки\n"
+                "/roast — ответь этой командой на сообщение участника\n"
+                "/profile male|female|neutral — стиль обращения\n"
+                "/level 1..4 — потолок жёсткости (админ)\n"
+                "/frequency 10..360 — пауза между репликами (админ)\n"
+                "/silence 30..1440 — через сколько минут тишины оживлять чат (админ)\n"
+                "/on /off — включить или выключить (админ)",
+            )
+            return
+
+        if cmd == "/test":
+            await self.tg.send(chat_id, "Аксакал жив. Всё вижу, всё запоминаю. Теперь говорите осторожнее 😏")
+            return
+
+        if cmd in {"/status", "/aksakal"}:
             c = self.db.get_chat(chat_id) or {}
-            await self.tg.send(chat_id, f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\nАвтожёсткость: включена (потолок {c.get('roast_level',3)}/4)\nПауза: {c.get('min_interval_minutes',25)} мин\nМолчание: {c.get('silence_minutes',180)} мин")
+            await self.tg.send(
+                chat_id,
+                f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
+                f"AI: {'включён' if self.generator.enabled else 'fallback без AI'}\n"
+                f"Автожёсткость: до {c.get('roast_level',3)}/4\n"
+                f"Пауза: {c.get('min_interval_minutes',10)} мин\n"
+                f"Молчание: {c.get('silence_minutes',180)} мин\n"
+                f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
+            )
             return
 
         if cmd == "/profile":
@@ -225,7 +322,7 @@ class AksakalBot:
 
         context = self.db.recent_context(chat_id, config.context_message_limit)
         recent_text = [m for m in context[-12:] if m["kind"] in {"message", "sticker", "reaction"}]
-        if len(recent_text) < 5:
+        if len(recent_text) < 3:
             return
 
         mood = self.generator.detect_mood(context)
@@ -235,7 +332,7 @@ class AksakalBot:
             "stern": 0.38,
             "calm": 0.28,
             "wise": 0.18,
-            "playful": min(0.11, 0.025 + len(recent_text) * 0.004),
+            "playful": min(0.22, 0.08 + len(recent_text) * 0.01),
         }
         if random.random() > chance_by_mood[mood]:
             return
