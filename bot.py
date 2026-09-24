@@ -320,7 +320,7 @@ class AksakalBot:
                     {"text": mark("2", mode == "fixed" and fixed == 2), "callback_data": "set:hard:2"},
                     {"text": mark("3", mode == "fixed" and fixed == 3), "callback_data": "set:hard:3"},
                     {"text": mark("4", mode == "fixed" and fixed == 4), "callback_data": "set:hard:4"},
-                    {"text": mark("5", mode == "fixed" and fixed == 5), "callback_data": "set:hard:5"},
+                    {"text": mark("🔥 5", mode == "fixed" and fixed == 5), "callback_data": "set:hard:5"},
                 ],
                 [
                     {"text": mark("3 сек", delay == 3), "callback_data": "set:time:3"},
@@ -475,7 +475,7 @@ class AksakalBot:
                         if n not in {1, 2, 3, 4, 5}:
                             raise ValueError
                     except ValueError:
-                        await self.tg.send(chat_id, "Использование: /hardness auto или /hardness 1..4")
+                        await self.tg.send(chat_id, "Использование: /hardness auto или /hardness 1..5")
                         return
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
                     await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/5")
