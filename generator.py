@@ -141,9 +141,9 @@ class PhraseGenerator:
             if len(compact) > 70:
                 compact = compact[:67].rstrip() + "..."
             topical = [
-                f"{mention} — по «{compact}» ты это сейчас серьёзно или суету наводишь?",
-                f"{mention} — вот это «{compact}» уже требует объяснений, уцы.",
-                f"{mention} — по теме «{compact}» ты уверенно зашёл, теперь раскрывай мысль.",
+                f"{mention} — {prefix}по «{compact}» ты это сейчас серьёзно или суету наводишь?",
+                f"{mention} — {prefix}вот это «{compact}» уже требует объяснений.",
+                f"{mention} — {prefix}по теме «{compact}» ты уверенно зашёл, теперь раскрывай мысль.",
             ]
             return random.choice(topical)
         if mood == "playful":
