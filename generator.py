@@ -143,9 +143,20 @@ class PhraseGenerator:
         if rough_hits >= 4:
             score += 1
 
+        # Дополнительные сигналы текущей беседы: частота сообщений, капс, восклицания,
+        # обращения друг к другу и повторяющиеся резкие ответы.
         recent = context[-12:]
         reactionish = sum(1 for m in recent if m.get("kind") in {"reaction", "sticker"})
         if reactionish >= 3:
+            score += 1
+
+        raw_recent = " ".join((m.get("content") or "") for m in recent if m.get("kind") == "message")
+        if raw_recent.count("!") >= 4:
+            score += 1
+        caps_words = re.findall(r"\b[А-ЯЁA-Z]{4,}\b", raw_recent)
+        if len(caps_words) >= 2:
+            score += 1
+        if len(recent) >= 8:
             score += 1
 
         if score <= 0:
