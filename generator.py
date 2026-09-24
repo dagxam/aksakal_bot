@@ -167,6 +167,8 @@ class PhraseGenerator:
         level: int,
         reason: str,
         mood: str | None = None,
+        personal_words: list[dict[str, Any]] | None = None,
+        group_words: list[dict[str, Any]] | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
         if not self.enabled:
@@ -179,6 +181,10 @@ class PhraseGenerator:
             who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
             transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
+        personal_words = personal_words or []
+        group_words = group_words or []
+        personal_lexicon = ", ".join(x["token"] for x in personal_words[:12]) or "(ещё не накоплен)"
+        group_lexicon = ", ".join(x["token"] for x in group_words[:14]) or "(ещё не накоплен)"
 
         mode_rules = {
             "supportive": "Человек или чат звучит грустно/тяжело. НЕ подкалывай. Поддержи коротко, тепло и без пафоса.",
@@ -211,6 +217,14 @@ class PhraseGenerator:
 
 Последние сообщения:
 {transcript_text}
+
+Память речи:
+- Частые слова и выражения именно этого участника: {personal_lexicon}
+- Частые слова и выражения этой группы: {group_lexicon}
+- Можно иногда естественно вернуть человеку его же характерное словечко или локальный мем группы.
+- Не копируй механически и не повторяй сленг в каждом ответе.
+- Не используй выученные слова, если они относятся к оскорблениям по внешности, здоровью, происхождению, религии или другим чувствительным признакам.
+- Для мужчин и женщин правило одинаковое: стиль определяется их реальной манерой переписки, а не стереотипами.
 
 Дагестанская подача:
 - Общайся как живой дагестанский аксакал/старший в компании: коротко, метко, с местным ритмом речи.
