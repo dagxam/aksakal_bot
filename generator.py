@@ -98,16 +98,28 @@ class PhraseGenerator:
         level: int = 2,
         source_text: str | None = None,
         source_kind: str = "message",
+        avoided_addresses: list[str] | None = None,
     ) -> str:
         mention = self.mention(user)
         profile = user.get("style_profile", "neutral")
-        address = random.choice({
+        avoided = {x.lower().replace("ё", "е") for x in (avoided_addresses or [])}
+        choices = {
             "male": ["вацок", "уцы", "брат", "ле"],
             "female": ["тётка", "сестра", "йо", "ле"],
             "neutral": ["йо", "ле", ""],
-        }.get(profile, ["йо", "ле", ""]))
+        }.get(profile, ["йо", "ле", ""])
+        choices = [x for x in choices if not x or x.lower().replace("ё", "е") not in avoided]
+        address = random.choice(choices or [""])
         prefix = f"{address}, " if address else ""
         source = (source_text or "").strip()
+        if source_kind == "profile_correction":
+            correction_lines = [
+                f"{mention} — понял, понял. Один раз ошибся — уже личное дело завели.",
+                f"{mention} — принято. Поправил меня быстро, будто протокол составлял.",
+                f"{mention} — всё, запомнил. Второй раз такой роскоши не будет.",
+                f"{mention} — понял тебя. Видишь, даже старших иногда приходится обучать.",
+            ]
+            return random.choice(correction_lines)
         if source_kind == "sticker":
             sticker_lines = [
                 f"{mention} — {prefix}хватит картинки кидать, пиши словами, буквы ещё не закончились.",
@@ -252,10 +264,11 @@ class PhraseGenerator:
         group_words: list[dict[str, Any]] | None = None,
         source_text: str | None = None,
         source_kind: str = "message",
+        avoided_addresses: list[str] | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
         if not self.enabled:
-            return self.fallback(target, mood, level, source_text, source_kind)
+            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
 
         mention = self.mention(target)
         profile = target.get("style_profile", "neutral")
@@ -275,6 +288,8 @@ class PhraseGenerator:
         group_words = group_words or []
         personal_lexicon = ", ".join(x["token"] for x in personal_words[:12]) or "(ещё не накоплен)"
         group_lexicon = ", ".join(x["token"] for x in group_words[:14]) or "(ещё не накоплен)"
+        avoided_addresses = [x.lower() for x in (avoided_addresses or [])]
+        avoided_text = ", ".join(avoided_addresses) or "(нет)"
         source_rule = {
             "message": "Это обычное сообщение. Отвечай строго на его смысл.",
             "sticker": (
@@ -285,6 +300,10 @@ class PhraseGenerator:
             "silence": (
                 "Это режим тишины. Тут не нужно отвечать на конкретную тему: выбери живую провокацию, "
                 "обратись к выбранному человеку по имени и попробуй расшевелить всю группу."
+            ),
+            "profile_correction": (
+                "Пользователь поправил обращение к себе. Подшути коротко над самой поправкой, покажи что понял "
+                "и не используй запрещённое обращение в этой реплике."
             ),
         }.get(source_kind, "Отвечай строго на текущий смысл.")
 
@@ -321,6 +340,7 @@ class PhraseGenerator:
 - female: можно естественно использовать «тётка», «сестра», «йо», «ле».
 - neutral: не используй гендерное обращение; допускаются нейтральные «йо» или «ле».
 - Используй максимум одно такое обращение в реплике и только если оно звучит естественно.
+- Никогда не используй обращения, которые этот человек уже запретил: {avoided_text}.
 Тип события: {source_kind}.
 Правило события: {source_rule}
 
@@ -386,17 +406,17 @@ class PhraseGenerator:
                     if resp.status >= 300:
                         body = await resp.text()
                         print(f"OpenAI API error {resp.status}: {body[:1000]}")
-                        return self.fallback(target, mood, level, source_text, source_kind)
+                        return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
                     data = await resp.json()
             text = self._extract_text(data).strip().replace("\n", " ")
             if not text:
-                return self.fallback(target, mood, level, source_text, source_kind)
+                return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
             if not text.startswith(f"{mention} — "):
                 text = f"{mention} — {text.lstrip('-—: ')}"
             return text[:500]
         except Exception as e:
             print(f"OpenAI generation error: {type(e).__name__}: {e}")
-            return self.fallback(target, mood, level, source_text, source_kind)
+            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
