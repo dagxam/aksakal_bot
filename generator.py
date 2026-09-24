@@ -83,13 +83,40 @@ class PhraseGenerator:
 
     @staticmethod
     def mention(user: dict[str, Any]) -> str:
+        display = (user.get("display_name") or "").strip()
+        if display:
+            # В реплике используем обычное имя, а не @username.
+            return display.split()[0]
         if user.get("username"):
-            return "@" + user["username"]
-        return user.get("display_name") or "участник"
+            return user["username"].lstrip("@")
+        return "участник"
 
-    def fallback(self, user: dict[str, Any], mood: str = "playful", level: int = 2, source_text: str | None = None) -> str:
+    def fallback(
+        self,
+        user: dict[str, Any],
+        mood: str = "playful",
+        level: int = 2,
+        source_text: str | None = None,
+        source_kind: str = "message",
+    ) -> str:
         mention = self.mention(user)
         source = (source_text or "").strip()
+        if source_kind == "sticker":
+            sticker_lines = [
+                f"{mention} — хватит картинки кидать, пиши словами, буквы ещё не закончились.",
+                f"{mention} — опять стикер? Ты писать разучился или клавиатура обиделась?",
+                f"{mention} — уцы, словами попробуй, мы тут не выставку стикеров открыли.",
+                f"{mention} — ещё один стикер и я решу, что буквы ты принципиально игнорируешь.",
+            ]
+            return random.choice(sticker_lines)
+        if source_kind == "silence":
+            silence_lines = [
+                f"{mention} — ты там живой? Разбуди остальных, группа уже пылью покрывается.",
+                f"{mention} — давай хоть ты начни хабар, остальные будто телефоны продали.",
+                f"{mention} — куда все пропали? Скажи что-нибудь спорное, сейчас народ соберётся.",
+                f"{mention} — группа молчит. Начинай суету, на тебя последняя надежда.",
+            ]
+            return random.choice(silence_lines)
         if source and mood == "playful":
             compact = re.sub(r"\s+", " ", source)
             if len(compact) > 70:
@@ -217,16 +244,17 @@ class PhraseGenerator:
         personal_words: list[dict[str, Any]] | None = None,
         group_words: list[dict[str, Any]] | None = None,
         source_text: str | None = None,
+        source_kind: str = "message",
     ) -> str:
         mood = mood or self.detect_mood(context)
         if not self.enabled:
-            return self.fallback(target, mood, level, source_text)
+            return self.fallback(target, mood, level, source_text, source_kind)
 
         mention = self.mention(target)
         profile = target.get("style_profile", "neutral")
         transcript = []
         for m in context[-30:]:
-            who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
+            who = m.get("display_name") or m.get("username") or "участник"
             transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
         exact_source = (source_text or "").strip()
@@ -240,6 +268,18 @@ class PhraseGenerator:
         group_words = group_words or []
         personal_lexicon = ", ".join(x["token"] for x in personal_words[:12]) or "(ещё не накоплен)"
         group_lexicon = ", ".join(x["token"] for x in group_words[:14]) or "(ещё не накоплен)"
+        source_rule = {
+            "message": "Это обычное сообщение. Отвечай строго на его смысл.",
+            "sticker": (
+                "Это СТИКЕР. Не придумывай тему, которой нет. Подколи именно факт, что человек вместо слов шлёт стикер. "
+                "На жёсткости 3–4 можно колко сказать, что пора писать словами, что буквы не закончились и т.п."
+            ),
+            "reaction": "Это реакция/эмодзи. Подколи именно реакцию, не выдумывай новую тему.",
+            "silence": (
+                "Это режим тишины. Тут не нужно отвечать на конкретную тему: выбери живую провокацию, "
+                "обратись к выбранному человеку по имени и попробуй расшевелить всю группу."
+            ),
+        }.get(source_kind, "Отвечай строго на текущий смысл.")
 
         mode_rules = {
             "supportive": "Человек или чат звучит грустно/тяжело. НЕ подкалывай. Поддержи коротко, тепло и без пафоса.",
@@ -269,6 +309,8 @@ class PhraseGenerator:
 Автоматически выбранная жёсткость сейчас: {level}/4.
 Правило жёсткости: {intensity_rules[max(1, min(4, level))]}
 Профиль стиля пользователя: {profile}.
+Тип события: {source_kind}.
+Правило события: {source_rule}
 
 ТОЧНОЕ СООБЩЕНИЕ, НА КОТОРОЕ ТЫ ОБЯЗАН ОТВЕТИТЬ:
 {exact_source}
@@ -286,6 +328,8 @@ class PhraseGenerator:
 - Если это утверждение — отреагируй именно на это утверждение.
 - Если это короткая реплика вроде «да», «нет», «ага», смайла или стикера — используй предыдущую связанную реплику как тему, но не придумывай новую.
 - Не выдумывай факты, которых нет в текущем сообщении или предыдущем контексте.
+- Если не можешь придумать шутку, напрямую связанную с сообщением, лучше ответь коротко по существу, чем брать случайный roast.
+- На жёсткости 4 можно сильнее задевать человека, но только через реально замеченные привычки в этой группе: его повторяющиеся слова, споры, молчание, стикеры, реакции, самоуверенную манеру и т.п. Не выдумывай личные факты.
 
 Память речи:
 - Частые слова и выражения именно этого участника: {personal_lexicon}
@@ -329,17 +373,17 @@ class PhraseGenerator:
                     if resp.status >= 300:
                         body = await resp.text()
                         print(f"OpenAI API error {resp.status}: {body[:1000]}")
-                        return self.fallback(target, mood, level, source_text)
+                        return self.fallback(target, mood, level, source_text, source_kind)
                     data = await resp.json()
             text = self._extract_text(data).strip().replace("\n", " ")
             if not text:
-                return self.fallback(target, mood, level, source_text)
+                return self.fallback(target, mood, level, source_text, source_kind)
             if not text.startswith(f"{mention} — "):
                 text = f"{mention} — {text.lstrip('-—: ')}"
             return text[:500]
         except Exception as e:
             print(f"OpenAI generation error: {type(e).__name__}: {e}")
-            return self.fallback(target, mood, level, source_text)
+            return self.fallback(target, mood, level, source_text, source_kind)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
