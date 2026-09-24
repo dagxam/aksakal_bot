@@ -34,11 +34,25 @@ class TelegramAPI:
                 raise RuntimeError(f"Telegram {method}: {data}")
             return data["result"]
 
-    async def send(self, chat_id: int, text: str, reply_to_message_id: int | None = None):
+    async def send(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
+    ):
         payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
         if reply_to_message_id:
             payload["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         return await self.call("sendMessage", **payload)
+
+    async def edit(self, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None):
+        payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "disable_web_page_preview": True}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
+        return await self.call("editMessageText", **payload)
 
 
 class AksakalBot:
@@ -57,6 +71,7 @@ class AksakalBot:
         self.generator = PhraseGenerator(config.openai_api_key, config.openai_model, config.ai_enabled)
         self.offset = 0
         self.tg: TelegramAPI | None = None
+        self.pending_reply_chats: set[int] = set()
 
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
@@ -124,18 +139,11 @@ class AksakalBot:
     async def configure_bot_profile(self):
         assert self.tg
         commands = [
-            {"command": "start", "description": "Как подключить Аксакала"},
-            {"command": "help", "description": "Помощь и команды"},
-            {"command": "test", "description": "Проверить, что бот отвечает"},
-            {"command": "status", "description": "Состояние Аксакала в группе"},
-            {"command": "aksakal", "description": "Настройки группы"},
-            {"command": "roast", "description": "Подколоть участника ответом на его сообщение"},
-            {"command": "hardness", "description": "Жёсткость: auto или 1–4 (админ)"},
-            {"command": "frequency", "description": "Минимальная пауза в минутах (админ)"},
-            {"command": "silence", "description": "Когда тормошить молчунов (админ)"},
-            {"command": "on", "description": "Включить Аксакала (админ)"},
-            {"command": "off", "description": "Выключить Аксакала (админ)"},
-            {"command": "profile", "description": "Стиль: male / female / neutral"},
+            {"command": "start", "description": "Как работает Аксакал"},
+            {"command": "settings", "description": "Настройки кнопками"},
+            {"command": "status", "description": "Текущие настройки"},
+            {"command": "roast", "description": "Подколоть ответом на сообщение"},
+            {"command": "test", "description": "Проверить бота"},
         ]
         await self.tg.call("setMyCommands", commands=commands)
         await self.tg.call("setMyName", name="Аксакал")
@@ -150,7 +158,7 @@ class AksakalBot:
 
     async def poll(self):
         assert self.tg
-        allowed = ["message", "edited_message", "message_reaction", "my_chat_member", "chat_member"]
+        allowed = ["message", "edited_message", "message_reaction", "my_chat_member", "chat_member", "callback_query"]
         while True:
             try:
                 updates = await self.tg.call(
@@ -171,6 +179,8 @@ class AksakalBot:
     async def handle_update(self, update: dict[str, Any]):
         if "message" in update:
             await self.handle_message(update["message"])
+        elif "callback_query" in update:
+            await self.handle_callback(update["callback_query"])
         elif "message_reaction" in update:
             await self.handle_reaction(update["message_reaction"])
         elif "my_chat_member" in update:
@@ -214,8 +224,7 @@ class AksakalBot:
             elif text.startswith("/help") and self.tg:
                 await self.tg.send(
                     chat["id"],
-                    "Проверка: /test\nВ группе: /status, /aksakal, /roast. "
-                    "Админ-настройки: /frequency, /silence, /on, /off.",
+                    "Основное: /settings — настройки кнопками, /status — состояние, /test — проверка.",
                 )
             return
 
@@ -290,6 +299,101 @@ class AksakalBot:
                 source_kind="reaction",
             )
 
+    @staticmethod
+    def settings_keyboard(chat: dict[str, Any]) -> dict[str, Any]:
+        mode = chat.get("hardness_mode", "auto")
+        fixed = int(chat.get("fixed_hardness", 3))
+        delay = int(chat.get("response_delay_seconds", 20))
+        enabled = bool(chat.get("enabled", 1))
+
+        def mark(label: str, active: bool) -> str:
+            return ("✅ " if active else "") + label
+
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": mark("AUTO", mode == "auto"), "callback_data": "set:hard:auto"},
+                    {"text": mark("1", mode == "fixed" and fixed == 1), "callback_data": "set:hard:1"},
+                    {"text": mark("2", mode == "fixed" and fixed == 2), "callback_data": "set:hard:2"},
+                    {"text": mark("3", mode == "fixed" and fixed == 3), "callback_data": "set:hard:3"},
+                    {"text": mark("4", mode == "fixed" and fixed == 4), "callback_data": "set:hard:4"},
+                ],
+                [
+                    {"text": mark("5 сек", delay == 5), "callback_data": "set:time:5"},
+                    {"text": mark("20 сек", delay == 20), "callback_data": "set:time:20"},
+                    {"text": mark("40 сек", delay == 40), "callback_data": "set:time:40"},
+                ],
+                [
+                    {"text": mark("1 мин", delay == 60), "callback_data": "set:time:60"},
+                    {"text": mark("3 мин", delay == 180), "callback_data": "set:time:180"},
+                ],
+                [
+                    {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
+                    {"text": mark("🔴 Выключен", not enabled), "callback_data": "set:bot:off"},
+                ],
+            ]
+        }
+
+    @staticmethod
+    def settings_text(chat: dict[str, Any]) -> str:
+        mode = chat.get("hardness_mode", "auto")
+        hardness = "AUTO" if mode == "auto" else f"{int(chat.get('fixed_hardness', 3))}/4"
+        delay = int(chat.get("response_delay_seconds", 20))
+        delay_label = {5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        return (
+            "⚙️ Настройки Аксакала\n"
+            f"Жёсткость: {hardness}\n"
+            f"Задержка ответа: {delay_label}\n"
+            f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
+            "Можно нажать кнопку или написать: /hardness 3, /hardness auto, /time 20"
+        )
+
+    async def show_settings(self, chat_id: int):
+        assert self.tg
+        chat = self.db.get_chat(chat_id) or {}
+        await self.tg.send(chat_id, self.settings_text(chat), reply_markup=self.settings_keyboard(chat))
+
+    async def handle_callback(self, query: dict[str, Any]):
+        assert self.tg
+        data = query.get("data") or ""
+        msg = query.get("message") or {}
+        chat = msg.get("chat") or {}
+        chat_id = int(chat.get("id", 0) or 0)
+        user_id = int((query.get("from") or {}).get("id", 0) or 0)
+        callback_id = query.get("id")
+        if not chat_id or not user_id or not data.startswith("set:"):
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
+            return
+
+        if not await self.is_admin(chat_id, user_id):
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Только администратор.", show_alert=True)
+            return
+
+        parts = data.split(":")
+        if len(parts) != 3:
+            return
+        section, value = parts[1], parts[2]
+
+        if section == "hard":
+            if value == "auto":
+                self.db.update_chat(chat_id, hardness_mode="auto")
+            elif value in {"1", "2", "3", "4"}:
+                self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=int(value))
+        elif section == "time" and value in {"5", "20", "40", "60", "180"}:
+            self.db.update_chat(chat_id, response_delay_seconds=int(value))
+        elif section == "bot":
+            self.db.update_chat(chat_id, enabled=1 if value == "on" else 0)
+
+        if callback_id:
+            await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Сохранено")
+        fresh = self.db.get_chat(chat_id) or {}
+        try:
+            await self.tg.edit(chat_id, int(msg.get("message_id", 0)), self.settings_text(fresh), self.settings_keyboard(fresh))
+        except Exception:
+            await self.show_settings(chat_id)
+
     async def handle_command(self, msg: dict[str, Any], text: str):
         assert self.tg
         chat_id = int(msg["chat"]["id"])
@@ -302,16 +406,19 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 "Команды Аксакала:\n"
-                "/test — мгновенная проверка\n"
-                "/status — состояние в группе\n"
-                "/aksakal — настройки\n"
-                "/roast — ответь этой командой на сообщение участника\n"
-                "/profile male|female|neutral — вручную поправить стиль обращения (необязательно)\n"
-                "/hardness auto|1|2|3|4 — режим жёсткости (админ)\n"
-                "/frequency 10..360 — пауза между репликами (админ)\n"
-                "/silence 30..1440 — через сколько минут тишины оживлять чат (админ)\n"
-                "/on /off — включить или выключить (админ)",
+                "/settings — выбрать жёсткость и время кнопками\n"
+                "/status — текущие настройки\n"
+                "/roast — подколоть ответом на сообщение\n"
+                "/test — проверить бота\n\n"
+                "Быстро вручную: /hardness auto|1|2|3|4 и /time 5|20|40|60|180",
             )
+            return
+
+        if cmd in {"/settings", "/aksakal"}:
+            if not await self.is_admin(chat_id, user_id):
+                await self.tg.send(chat_id, "Настройки может менять администратор группы.")
+                return
+            await self.show_settings(chat_id)
             return
 
         if cmd == "/test":
@@ -325,7 +432,7 @@ class AksakalBot:
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {'включён — ответы генерируются по контексту' if self.generator.enabled else 'НЕ ВКЛЮЧЁН — сейчас используются готовые fallback-фразы'}\n"
                 f"Жёсткость: {('AUTO — сам выбираю 1–' + str(c.get('roast_level',3)) + '/4 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
-                f"Пауза: {c.get('min_interval_minutes',10)} мин\n"
+                f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
             )
@@ -342,7 +449,7 @@ class AksakalBot:
             await self.tg.send(chat_id, "Профиль стиля сохранён.")
             return
 
-        if cmd in {"/on", "/off", "/hardness", "/frequency", "/silence"}:
+        if cmd in {"/on", "/off", "/hardness", "/h", "/time", "/t", "/frequency", "/silence"}:
             if not await self.is_admin(chat_id, user_id):
                 await self.tg.send(chat_id, "Эту настройку может менять администратор группы.")
                 return
@@ -352,7 +459,7 @@ class AksakalBot:
             elif cmd == "/off":
                 self.db.update_chat(chat_id, enabled=0)
                 await self.tg.send(chat_id, "Аксакал пока помолчит.")
-            elif cmd == "/hardness":
+            elif cmd in {"/hardness", "/h"}:
                 value = arg.lower()
                 if value == "auto":
                     self.db.update_chat(chat_id, hardness_mode="auto")
@@ -367,14 +474,29 @@ class AksakalBot:
                         return
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
                     await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
-            elif cmd == "/frequency":
+            elif cmd in {"/time", "/t"}:
                 try:
-                    n = max(10, min(360, int(arg)))
+                    n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /frequency количество_минут (10–360)")
+                    await self.tg.send(chat_id, "Использование: /time 5 | 20 | 40 | 60 | 180")
                     return
-                self.db.update_chat(chat_id, min_interval_minutes=n)
-                await self.tg.send(chat_id, f"Минимальная пауза: {n} мин.")
+                if n not in {5, 20, 40, 60, 180}:
+                    await self.tg.send(chat_id, "Выбери: 5, 20, 40, 60 или 180 секунд.")
+                    return
+                self.db.update_chat(chat_id, response_delay_seconds=n)
+                await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
+            elif cmd == "/frequency":
+                # Старый скрытый алиас: значения трактуем как секунды только из нового набора.
+                try:
+                    n = int(arg)
+                except ValueError:
+                    await self.tg.send(chat_id, "Теперь используй /time 5|20|40|60|180")
+                    return
+                if n not in {5, 20, 40, 60, 180}:
+                    await self.tg.send(chat_id, "Теперь используй /time 5|20|40|60|180")
+                    return
+                self.db.update_chat(chat_id, response_delay_seconds=n)
+                await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
             elif cmd == "/silence":
                 try:
                     n = max(30, min(1440, int(arg)))
@@ -417,10 +539,8 @@ class AksakalBot:
         source_text = (msg.get("text") or msg.get("caption") or "").strip()
         is_sticker = bool(msg.get("sticker"))
 
-        # Сохраняем паузу между самостоятельными вмешательствами, чтобы бот не отвечал на всё подряд.
-        now = int(time.time())
-        min_gap = max(90, int(chat.get("min_interval_minutes", 10)) * 60)
-        if now - int(chat.get("last_bot_message_at", 0)) < min_gap:
+        # Одновременно в группе может ожидать только одна запланированная реплика.
+        if chat_id in self.pending_reply_chats:
             return
 
         should_reply = False
@@ -474,15 +594,46 @@ class AksakalBot:
         if not should_reply:
             return
 
-        await self.roast(
-            chat_id,
-            sender_id,
-            reason,
-            mood=mood,
-            reply_to_message_id=msg.get("message_id"),
-            source_text=source_text,
-            source_kind="sticker" if is_sticker else "message",
+        self.pending_reply_chats.add(chat_id)
+        asyncio.create_task(
+            self.delayed_roast(
+                chat_id=chat_id,
+                target_user_id=sender_id,
+                reason=reason,
+                mood=mood,
+                reply_to_message_id=msg.get("message_id"),
+                source_text=source_text,
+                source_kind="sticker" if is_sticker else "message",
+            )
         )
+
+    async def delayed_roast(
+        self,
+        *,
+        chat_id: int,
+        target_user_id: int,
+        reason: str,
+        mood: str | None,
+        reply_to_message_id: int | None,
+        source_text: str | None,
+        source_kind: str,
+    ):
+        try:
+            chat = self.db.get_chat(chat_id) or {}
+            delay = int(chat.get("response_delay_seconds", 20))
+            delay = delay if delay in {5, 20, 40, 60, 180} else 20
+            await asyncio.sleep(delay)
+            await self.roast(
+                chat_id,
+                target_user_id,
+                reason,
+                mood=mood,
+                reply_to_message_id=reply_to_message_id,
+                source_text=source_text,
+                source_kind=source_kind,
+            )
+        finally:
+            self.pending_reply_chats.discard(chat_id)
 
     async def roast(
         self,
