@@ -121,6 +121,39 @@ class AksakalBot:
         return None
 
 
+    @staticmethod
+    def detect_greeting_style(text: str) -> str | None:
+        import re
+        low = " ".join((text or "").lower().replace("ё", "е").split())
+        if not low:
+            return None
+
+        # Нормальные для стиля Аксакала варианты салама.
+        salam_patterns = [
+            r"\bасс?ал(?:а|я)м[у]?[\s-]+алейкум\b",
+            r"\bас[\s-]*сал(?:а|я)м[у]?[\s-]+алейкум\b",
+            r"\bсал(?:а|я)м[у]?[\s-]+алейкум\b",
+            r"\bасс?аляму[\s-]+алейкум\b",
+        ]
+        if any(re.search(p, low) for p in salam_patterns):
+            return "salam"
+
+        generic_patterns = [
+            r"^\s*привет(?:ик|ики)?\b",
+            r"^\s*здравствуй(?:те)?\b",
+            r"^\s*здоров(?:а|о|еньки)?\b",
+            r"^\s*доброе\s+(?:утро|утречко)\b",
+            r"^\s*добрый\s+(?:день|вечер)\b",
+            r"^\s*салют\b",
+            r"^\s*хай\b",
+            r"^\s*hello\b",
+            r"^\s*hi\b",
+        ]
+        if any(re.search(p, low) for p in generic_patterns):
+            return "generic"
+        return None
+
+
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
@@ -348,8 +381,9 @@ class AksakalBot:
         return (
             "⚙️ Настройки Аксакала\n"
             f"Жёсткость: {hardness}\n"
-            f"Задержка ответа: {delay_label}\n"
+            f"Таймер тишины: {delay_label}\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
+            "После этого времени без новых сообщений отвечаю на последнее.\n"
             "Можно нажать кнопку или написать: /hardness 5, /hardness auto, /time 3"
         )
 
@@ -437,7 +471,7 @@ class AksakalBot:
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {'включён — ответы генерируются по контексту' if self.generator.enabled else 'НЕ ВКЛЮЧЁН — сейчас используются готовые fallback-фразы'}\n"
                 f"Жёсткость: {('AUTO — сам выбираю 1–5 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/5')}\n"
-                f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
+                f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
             )
@@ -567,54 +601,46 @@ class AksakalBot:
             mood = self.generator.detect_mood(context)
             source_text = (msg.get("text") or msg.get("caption") or "").strip()
             is_sticker = bool(msg.get("sticker"))
-
-            should_reply = False
-            reason = ""
+            source_kind = "sticker" if is_sticker else "message"
 
             if is_sticker:
-                should_reply = random.random() < 0.65
-                reason = (
-                    "человек отправил стикер вместо слов; подшути именно над этим. "
-                    "На жёсткости 4–5 можно сказать колче: хватит картинки кидать, пиши словами; "
-                    "ты писать разучился или буквы не видишь? Формулировку придумай сам."
-                )
                 source_text = (msg.get("sticker") or {}).get("emoji") or "стикер"
-            elif mood == "supportive":
-                should_reply = random.random() < 0.70
-                reason = "в последнем сообщении чувствуется реальная грусть/усталость; коротко поддержи именно по его смыслу"
-            elif mood == "stern":
-                should_reply = random.random() < 0.72
-                reason = "в последнем сообщении есть явная грубость; коротко и по существу осади именно эту реплику"
-            elif mood == "calm":
-                should_reply = random.random() < 0.42
-                reason = "разговор становится напряжённым; отреагируй на последнее сообщение и слегка сбавь накал"
-            elif mood == "wise":
-                should_reply = random.random() < 0.30
-                reason = "в последнем сообщении есть серьёзная мысль; дай короткий уместный ответ по существу"
-            else:
-                low = source_text.lower()
-                score = 0
-                if len(source_text) >= 35:
-                    score += 1
-                if "?" in source_text or "!" in source_text:
-                    score += 1
-                if any(x in low for x in ("ахах", "хаха", "лол", "ору", "ржу", "😂", "🤣")):
-                    score += 2
-                if any(x in low for x in ("бред", "чуш", "морос", "клоун", "гений", "эксперт", "жесть", "капец")):
-                    score += 2
-                if msg.get("reply_to_message"):
-                    score += 1
-                if source_text.count("!") >= 2:
-                    score += 1
-                chance = {0: 0.04, 1: 0.10, 2: 0.20, 3: 0.34}.get(min(score, 3), 0.34)
-                should_reply = random.random() < chance
                 reason = (
-                    "после паузы это последнее сообщение в группе. Подколи только если можешь "
-                    "привязать шутку к его конкретному смыслу; иначе лучше промолчи."
+                    "человек отправил стикер вместо слов. Ответь именно на это: подшути, что пора писать словами. "
+                    "Жёсткость формулировки должна точно соответствовать выбранному уровню."
                 )
-
-            if not should_reply:
-                return
+            else:
+                greeting = self.detect_greeting_style(source_text)
+                if greeting == "generic":
+                    mood = "playful"
+                    source_kind = "greeting_correction"
+                    reason = (
+                        "человек поздоровался обычным «привет/здравствуйте/здорово» вместо салама. "
+                        "Сделай короткое дагестанско-кавказское замечание по теме приветствия: в духе "
+                        "«что за привет, нормально здоровайся — Ассаламу алейкум». Не утверждай его национальность "
+                        "или происхождение. Жёсткость замечания должна соответствовать текущему уровню."
+                    )
+                elif greeting == "salam":
+                    mood = "playful"
+                    source_kind = "greeting_salam"
+                    reason = (
+                        "человек нормально поздоровался саламом. Ответь «Ва алейкум ассалам» и при желании "
+                        "добавь очень короткую уместную реплику в стиле Аксакала."
+                    )
+                elif mood == "supportive":
+                    reason = "ответь прямо на последнее сообщение по его смыслу; если человеку тяжело — поддержи без случайной шутки"
+                elif mood == "stern":
+                    reason = "ответь прямо на последнее сообщение по существу; если там грубость — осади её в соответствии с жёсткостью"
+                elif mood == "calm":
+                    reason = "ответь именно на последнее сообщение и по возможности снизь напряжение"
+                elif mood == "wise":
+                    reason = "ответь по существу последнего сообщения короткой уместной мыслью"
+                else:
+                    reason = (
+                        "это последнее сообщение после выбранной паузы. ОБЯЗАТЕЛЬНО ответь на него. "
+                        "Если есть повод — подколи; если повода нет — просто дай живую короткую реакцию строго по его теме. "
+                        "Не используй случайную универсальную фразу."
+                    )
 
             await self.roast(
                 chat_id,
@@ -623,7 +649,7 @@ class AksakalBot:
                 mood=mood,
                 reply_to_message_id=msg.get("message_id"),
                 source_text=source_text,
-                source_kind="sticker" if is_sticker else "message",
+                source_kind=source_kind,
             )
         except asyncio.CancelledError:
             return
