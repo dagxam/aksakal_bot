@@ -87,12 +87,24 @@ class PhraseGenerator:
             return "@" + user["username"]
         return user.get("display_name") or "участник"
 
-    def fallback(self, user: dict[str, Any], mood: str = "playful", level: int = 2) -> str:
+    def fallback(self, user: dict[str, Any], mood: str = "playful", level: int = 2, source_text: str | None = None) -> str:
+        mention = self.mention(user)
+        source = (source_text or "").strip()
+        if source and mood == "playful":
+            compact = re.sub(r"\s+", " ", source)
+            if len(compact) > 70:
+                compact = compact[:67].rstrip() + "..."
+            topical = [
+                f"{mention} — по «{compact}» ты это сейчас серьёзно или суету наводишь?",
+                f"{mention} — вот это «{compact}» уже требует объяснений, уцы.",
+                f"{mention} — по теме «{compact}» ты уверенно зашёл, теперь раскрывай мысль.",
+            ]
+            return random.choice(topical)
         if mood == "playful":
             pool = FALLBACKS["playful"].get(max(1, min(4, level)), FALLBACKS["playful"][2])
         else:
             pool = FALLBACKS.get(mood, FALLBACKS["playful"][2])
-        return random.choice(pool).format(u=self.mention(user))
+        return random.choice(pool).format(u=mention)
 
     @staticmethod
     def _recent_text(context: list[dict[str, Any]], count: int = 12) -> str:
@@ -204,10 +216,11 @@ class PhraseGenerator:
         mood: str | None = None,
         personal_words: list[dict[str, Any]] | None = None,
         group_words: list[dict[str, Any]] | None = None,
+        source_text: str | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
         if not self.enabled:
-            return self.fallback(target, mood, level)
+            return self.fallback(target, mood, level, source_text)
 
         mention = self.mention(target)
         profile = target.get("style_profile", "neutral")
@@ -216,13 +229,13 @@ class PhraseGenerator:
             who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
             transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
-        last_message = ""
-        for m in reversed(context):
-            if m.get("kind") == "message" and (m.get("content") or "").strip():
-                who = "@" + m["username"] if m.get("username") else m.get("display_name", "участник")
-                last_message = f"{who}: {m.get('content','').strip()}"
-                break
-        last_message = last_message or "(нет текстового сообщения)"
+        exact_source = (source_text or "").strip()
+        if not exact_source:
+            for m in reversed(context):
+                if (m.get("content") or "").strip():
+                    exact_source = (m.get("content") or "").strip()
+                    break
+        exact_source = exact_source or "(нет содержимого сообщения)"
         personal_words = personal_words or []
         group_words = group_words or []
         personal_lexicon = ", ".join(x["token"] for x in personal_words[:12]) or "(ещё не накоплен)"
@@ -257,17 +270,22 @@ class PhraseGenerator:
 Правило жёсткости: {intensity_rules[max(1, min(4, level))]}
 Профиль стиля пользователя: {profile}.
 
-ГЛАВНОЕ СООБЩЕНИЕ, НА КОТОРОЕ ТЫ ОТВЕЧАЕШЬ ПРЯМО СЕЙЧАС:
-{last_message}
+ТОЧНОЕ СООБЩЕНИЕ, НА КОТОРОЕ ТЫ ОБЯЗАН ОТВЕТИТЬ:
+{exact_source}
 
-Контекст до него нужен только чтобы понять тему, отношения и шутку:
+Контекст группы — только фон, чтобы понять предыдущую мысль, людей и локальные шутки:
 {transcript_text}
 
-КРИТИЧЕСКОЕ ПРАВИЛО:
-- Ответ должен иметь прямую смысловую связь именно с ГЛАВНЫМ СООБЩЕНИЕМ.
-- Если человек пишет про машину — отвечай про машину; про работу — про работу; про отношения — про отношения.
-- Не выдавай универсальную фразу, если из последнего сообщения можно сделать конкретный ответ.
-- Можно использовать факт только из текущей переписки и памяти этой группы, ничего не выдумывай.
+ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА СМЫСЛА:
+- Сначала пойми, О ЧЁМ ИМЕННО говорит точное сообщение выше.
+- Твой ответ обязан продолжать именно эту тему или прямо реагировать на высказанную мысль.
+- Нельзя брать случайную старую тему из контекста, если она не связана с текущим сообщением.
+- Нельзя выдавать универсальный roast вроде «уверенности много» без связи с конкретной фразой пользователя.
+- Если в сообщении есть объект/тема (машина, работа, деньги, отношения, игра, еда, человек, поездка и т.д.) — обязательно отрази её в ответе.
+- Если это вопрос — ответь по сути вопроса и только потом можешь добавить подкол.
+- Если это утверждение — отреагируй именно на это утверждение.
+- Если это короткая реплика вроде «да», «нет», «ага», смайла или стикера — используй предыдущую связанную реплику как тему, но не придумывай новую.
+- Не выдумывай факты, которых нет в текущем сообщении или предыдущем контексте.
 
 Память речи:
 - Частые слова и выражения именно этого участника: {personal_lexicon}
@@ -311,17 +329,17 @@ class PhraseGenerator:
                     if resp.status >= 300:
                         body = await resp.text()
                         print(f"OpenAI API error {resp.status}: {body[:1000]}")
-                        return self.fallback(target, mood, level)
+                        return self.fallback(target, mood, level, source_text)
                     data = await resp.json()
             text = self._extract_text(data).strip().replace("\n", " ")
             if not text:
-                return self.fallback(target, mood, level)
+                return self.fallback(target, mood, level, source_text)
             if not text.startswith(f"{mention} — "):
                 text = f"{mention} — {text.lstrip('-—: ')}"
             return text[:500]
         except Exception as e:
             print(f"OpenAI generation error: {type(e).__name__}: {e}")
-            return self.fallback(target, mood, level)
+            return self.fallback(target, mood, level, source_text)
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
