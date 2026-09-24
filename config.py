@@ -25,7 +25,7 @@ class Config:
     silence_trigger_minutes: int = int(os.getenv("SILENCE_TRIGGER_MINUTES", "180"))
     context_message_limit: int = int(os.getenv("CONTEXT_MESSAGE_LIMIT", "40"))
     ai_enabled: bool = _bool("AI_ENABLED", True)
-    auto_reply_every_message: bool = _bool("AUTO_REPLY_EVERY_MESSAGE", True)
+    auto_reply_every_message: bool = _bool("AUTO_REPLY_EVERY_MESSAGE", False)
 
 
 config = Config()
