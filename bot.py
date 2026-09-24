@@ -92,7 +92,6 @@ class AksakalBot:
             {"command": "aksakal", "description": "Настройки группы"},
             {"command": "roast", "description": "Подколоть участника ответом на его сообщение"},
             {"command": "hardness", "description": "Жёсткость: auto или 1–4 (админ)"},
-            {"command": "level", "description": "Старый алиас жёсткости (админ)"},
             {"command": "frequency", "description": "Минимальная пауза в минутах (админ)"},
             {"command": "silence", "description": "Когда тормошить молчунов (админ)"},
             {"command": "on", "description": "Включить Аксакала (админ)"},
@@ -177,7 +176,7 @@ class AksakalBot:
                 await self.tg.send(
                     chat["id"],
                     "Проверка: /test\nВ группе: /status, /aksakal, /roast. "
-                    "Админ-настройки: /level, /frequency, /silence, /on, /off.",
+                    "Админ-настройки: /frequency, /silence, /on, /off.",
                 )
             return
 
@@ -247,7 +246,6 @@ class AksakalBot:
                 "/roast — ответь этой командой на сообщение участника\n"
                 "/profile male|female|neutral — стиль обращения\n"
                 "/hardness auto|1|2|3|4 — режим жёсткости (админ)\n"
-                "/level 1..4 — старый алиас (админ)\n"
                 "/frequency 10..360 — пауза между репликами (админ)\n"
                 "/silence 30..1440 — через сколько минут тишины оживлять чат (админ)\n"
                 "/on /off — включить или выключить (админ)",
@@ -282,7 +280,7 @@ class AksakalBot:
             await self.tg.send(chat_id, "Профиль стиля сохранён.")
             return
 
-        if cmd in {"/on", "/off", "/level", "/hardness", "/frequency", "/silence"}:
+        if cmd in {"/on", "/off", "/hardness", "/frequency", "/silence"}:
             if not await self.is_admin(chat_id, user_id):
                 await self.tg.send(chat_id, "Эту настройку может менять администратор группы.")
                 return
@@ -307,16 +305,6 @@ class AksakalBot:
                         return
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
                     await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
-            elif cmd == "/level":
-                try:
-                    n = int(arg)
-                    if n not in {1, 2, 3, 4}:
-                        raise ValueError
-                except ValueError:
-                    await self.tg.send(chat_id, "Использование: /level 1..4")
-                    return
-                self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
-                await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
             elif cmd == "/frequency":
                 try:
                     n = max(10, min(360, int(arg)))
