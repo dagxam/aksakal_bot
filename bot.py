@@ -71,7 +71,7 @@ class AksakalBot:
         self.generator = PhraseGenerator(config.openai_api_key, config.openai_model, config.ai_enabled)
         self.offset = 0
         self.tg: TelegramAPI | None = None
-        self.pending_reply_chats: set[int] = set()
+        self.pending_reply_tasks: dict[int, asyncio.Task] = {}
 
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
@@ -250,6 +250,9 @@ class AksakalBot:
             self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
             feedback = self.detect_address_feedback(text)
             if feedback:
+                old_task = self.pending_reply_tasks.pop(chat_id, None)
+                if old_task and not old_task.done():
+                    old_task.cancel()
                 if feedback["profile"]:
                     self.db.set_profile(chat_id, user_id, feedback["profile"])
                 for token in feedback["avoid"]:
@@ -317,8 +320,10 @@ class AksakalBot:
                     {"text": mark("2", mode == "fixed" and fixed == 2), "callback_data": "set:hard:2"},
                     {"text": mark("3", mode == "fixed" and fixed == 3), "callback_data": "set:hard:3"},
                     {"text": mark("4", mode == "fixed" and fixed == 4), "callback_data": "set:hard:4"},
+                    {"text": mark("5", mode == "fixed" and fixed == 5), "callback_data": "set:hard:5"},
                 ],
                 [
+                    {"text": mark("3 сек", delay == 3), "callback_data": "set:time:3"},
                     {"text": mark("5 сек", delay == 5), "callback_data": "set:time:5"},
                     {"text": mark("20 сек", delay == 20), "callback_data": "set:time:20"},
                     {"text": mark("40 сек", delay == 40), "callback_data": "set:time:40"},
@@ -337,15 +342,15 @@ class AksakalBot:
     @staticmethod
     def settings_text(chat: dict[str, Any]) -> str:
         mode = chat.get("hardness_mode", "auto")
-        hardness = "AUTO" if mode == "auto" else f"{int(chat.get('fixed_hardness', 3))}/4"
+        hardness = "AUTO" if mode == "auto" else f"{int(chat.get('fixed_hardness', 3))}/5"
         delay = int(chat.get("response_delay_seconds", 20))
-        delay_label = {5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        delay_label = {3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
         return (
             "⚙️ Настройки Аксакала\n"
             f"Жёсткость: {hardness}\n"
             f"Задержка ответа: {delay_label}\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
-            "Можно нажать кнопку или написать: /hardness 3, /hardness auto, /time 20"
+            "Можно нажать кнопку или написать: /hardness 5, /hardness auto, /time 3"
         )
 
     async def show_settings(self, chat_id: int):
@@ -379,9 +384,9 @@ class AksakalBot:
         if section == "hard":
             if value == "auto":
                 self.db.update_chat(chat_id, hardness_mode="auto")
-            elif value in {"1", "2", "3", "4"}:
+            elif value in {"1", "2", "3", "4", "5"}:
                 self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=int(value))
-        elif section == "time" and value in {"5", "20", "40", "60", "180"}:
+        elif section == "time" and value in {"3", "5", "20", "40", "60", "180"}:
             self.db.update_chat(chat_id, response_delay_seconds=int(value))
         elif section == "bot":
             self.db.update_chat(chat_id, enabled=1 if value == "on" else 0)
@@ -410,7 +415,7 @@ class AksakalBot:
                 "/status — текущие настройки\n"
                 "/roast — подколоть ответом на сообщение\n"
                 "/test — проверить бота\n\n"
-                "Быстро вручную: /hardness auto|1|2|3|4 и /time 5|20|40|60|180",
+                "Быстро вручную: /hardness auto|1|2|3|4|5 и /time 3|5|20|40|60|180",
             )
             return
 
@@ -431,7 +436,7 @@ class AksakalBot:
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {'включён — ответы генерируются по контексту' if self.generator.enabled else 'НЕ ВКЛЮЧЁН — сейчас используются готовые fallback-фразы'}\n"
-                f"Жёсткость: {('AUTO — сам выбираю 1–' + str(c.get('roast_level',3)) + '/4 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
+                f"Жёсткость: {('AUTO — сам выбираю 1–5 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/5')}\n"
                 f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
@@ -467,21 +472,21 @@ class AksakalBot:
                 else:
                     try:
                         n = int(value)
-                        if n not in {1, 2, 3, 4}:
+                        if n not in {1, 2, 3, 4, 5}:
                             raise ValueError
                     except ValueError:
                         await self.tg.send(chat_id, "Использование: /hardness auto или /hardness 1..4")
                         return
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
-                    await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
+                    await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/5")
             elif cmd in {"/time", "/t"}:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /time 5 | 20 | 40 | 60 | 180")
+                    await self.tg.send(chat_id, "Использование: /time 3 | 5 | 20 | 40 | 60 | 180")
                     return
-                if n not in {5, 20, 40, 60, 180}:
-                    await self.tg.send(chat_id, "Выбери: 5, 20, 40, 60 или 180 секунд.")
+                if n not in {3, 5, 20, 40, 60, 180}:
+                    await self.tg.send(chat_id, "Выбери: 3, 5, 20, 40, 60 или 180 секунд.")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
                 await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
@@ -490,10 +495,10 @@ class AksakalBot:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Теперь используй /time 5|20|40|60|180")
+                    await self.tg.send(chat_id, "Теперь используй /time 3|5|20|40|60|180")
                     return
-                if n not in {5, 20, 40, 60, 180}:
-                    await self.tg.send(chat_id, "Теперь используй /time 5|20|40|60|180")
+                if n not in {3, 5, 20, 40, 60, 180}:
+                    await self.tg.send(chat_id, "Теперь используй /time 3|5|20|40|60|180")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
                 await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
@@ -524,116 +529,107 @@ class AksakalBot:
             return False
 
     async def maybe_emotional_response(self, chat_id: int, msg: dict[str, Any]):
-        """Вмешивается не постоянно, а когда в сообщении есть хороший повод."""
+        """Сбрасывает таймер на каждом новом сообщении и оценивает только последнее после паузы."""
         chat = self.db.get_chat(chat_id)
         if not chat or not chat["enabled"]:
             return
 
         sender = msg.get("from", {})
-        sender_id = int(sender.get("id", 0))
-        if not sender_id:
+        if not int(sender.get("id", 0) or 0):
             return
 
-        context = self.db.recent_context(chat_id, config.context_message_limit)
-        mood = self.generator.detect_mood(context)
-        source_text = (msg.get("text") or msg.get("caption") or "").strip()
-        is_sticker = bool(msg.get("sticker"))
+        old_task = self.pending_reply_tasks.get(chat_id)
+        if old_task and not old_task.done():
+            old_task.cancel()
 
-        # Одновременно в группе может ожидать только одна запланированная реплика.
-        if chat_id in self.pending_reply_chats:
-            return
+        task = asyncio.create_task(self.delayed_consider(chat_id, dict(msg)))
+        self.pending_reply_tasks[chat_id] = task
 
-        should_reply = False
-        reason = ""
+    async def delayed_consider(self, chat_id: int, msg: dict[str, Any]):
+        current = asyncio.current_task()
+        try:
+            chat = self.db.get_chat(chat_id) or {}
+            delay = int(chat.get("response_delay_seconds", 20))
+            delay = delay if delay in {3, 5, 20, 40, 60, 180} else 20
+            await asyncio.sleep(delay)
 
-        if is_sticker:
-            # На стикеры Аксакал реагирует заметно чаще и может подколоть жёстче.
-            should_reply = random.random() < 0.58
-            reason = (
-                "человек отправил стикер вместо слов; подшути именно над этим. "
-                "На жёсткости 3–4 можно сказать в духе: хватит картинки кидать, пиши словами; "
-                "ты писать разучился или буквы закончились? Формулировку придумай сам."
-            )
-            source_text = (msg.get("sticker") or {}).get("emoji") or "стикер"
-        elif mood == "supportive":
-            should_reply = random.random() < 0.70
-            reason = "в последнем сообщении чувствуется реальная грусть/усталость; коротко поддержи именно по его смыслу"
-        elif mood == "stern":
-            should_reply = random.random() < 0.70
-            reason = "в последнем сообщении есть явная грубость; коротко и по существу осади именно эту реплику"
-        elif mood == "calm":
-            should_reply = random.random() < 0.42
-            reason = "разговор становится напряжённым; отреагируй на последнее сообщение и слегка сбавь накал"
-        elif mood == "wise":
-            should_reply = random.random() < 0.30
-            reason = "в последнем сообщении есть серьёзная мысль; дай короткий уместный ответ по существу"
-        else:
-            # Для обычного разговора ищем реальный повод для подкола.
-            low = source_text.lower()
-            score = 0
-            if len(source_text) >= 35:
-                score += 1
-            if "?" in source_text or "!" in source_text:
-                score += 1
-            if any(x in low for x in ("ахах", "хаха", "лол", "ору", "ржу", "😂", "🤣")):
-                score += 2
-            if any(x in low for x in ("бред", "чуш", "морос", "клоун", "гений", "эксперт", "жесть", "капец")):
-                score += 2
-            if msg.get("reply_to_message"):
-                score += 1
-            if source_text.count("!") >= 2:
-                score += 1
+            # Если за время ожидания пришло новое сообщение, старая задача уже отменена.
+            chat = self.db.get_chat(chat_id)
+            if not chat or not chat.get("enabled", 1):
+                return
 
-            chance = {0: 0.04, 1: 0.10, 2: 0.20, 3: 0.32}.get(min(score, 3), 0.32)
-            should_reply = random.random() < chance
-            reason = (
-                "в последнем сообщении есть повод для короткого уместного подкола. "
-                "Подколи только если можешь привязать шутку к конкретному смыслу сообщения."
-            )
+            sender = msg.get("from", {})
+            sender_id = int(sender.get("id", 0) or 0)
+            if not sender_id:
+                return
 
-        if not should_reply:
-            return
+            context = self.db.recent_context(chat_id, config.context_message_limit)
+            mood = self.generator.detect_mood(context)
+            source_text = (msg.get("text") or msg.get("caption") or "").strip()
+            is_sticker = bool(msg.get("sticker"))
 
-        self.pending_reply_chats.add(chat_id)
-        asyncio.create_task(
-            self.delayed_roast(
-                chat_id=chat_id,
-                target_user_id=sender_id,
-                reason=reason,
+            should_reply = False
+            reason = ""
+
+            if is_sticker:
+                should_reply = random.random() < 0.65
+                reason = (
+                    "человек отправил стикер вместо слов; подшути именно над этим. "
+                    "На жёсткости 4–5 можно сказать колче: хватит картинки кидать, пиши словами; "
+                    "ты писать разучился или буквы не видишь? Формулировку придумай сам."
+                )
+                source_text = (msg.get("sticker") or {}).get("emoji") or "стикер"
+            elif mood == "supportive":
+                should_reply = random.random() < 0.70
+                reason = "в последнем сообщении чувствуется реальная грусть/усталость; коротко поддержи именно по его смыслу"
+            elif mood == "stern":
+                should_reply = random.random() < 0.72
+                reason = "в последнем сообщении есть явная грубость; коротко и по существу осади именно эту реплику"
+            elif mood == "calm":
+                should_reply = random.random() < 0.42
+                reason = "разговор становится напряжённым; отреагируй на последнее сообщение и слегка сбавь накал"
+            elif mood == "wise":
+                should_reply = random.random() < 0.30
+                reason = "в последнем сообщении есть серьёзная мысль; дай короткий уместный ответ по существу"
+            else:
+                low = source_text.lower()
+                score = 0
+                if len(source_text) >= 35:
+                    score += 1
+                if "?" in source_text or "!" in source_text:
+                    score += 1
+                if any(x in low for x in ("ахах", "хаха", "лол", "ору", "ржу", "😂", "🤣")):
+                    score += 2
+                if any(x in low for x in ("бред", "чуш", "морос", "клоун", "гений", "эксперт", "жесть", "капец")):
+                    score += 2
+                if msg.get("reply_to_message"):
+                    score += 1
+                if source_text.count("!") >= 2:
+                    score += 1
+                chance = {0: 0.04, 1: 0.10, 2: 0.20, 3: 0.34}.get(min(score, 3), 0.34)
+                should_reply = random.random() < chance
+                reason = (
+                    "после паузы это последнее сообщение в группе. Подколи только если можешь "
+                    "привязать шутку к его конкретному смыслу; иначе лучше промолчи."
+                )
+
+            if not should_reply:
+                return
+
+            await self.roast(
+                chat_id,
+                sender_id,
+                reason,
                 mood=mood,
                 reply_to_message_id=msg.get("message_id"),
                 source_text=source_text,
                 source_kind="sticker" if is_sticker else "message",
             )
-        )
-
-    async def delayed_roast(
-        self,
-        *,
-        chat_id: int,
-        target_user_id: int,
-        reason: str,
-        mood: str | None,
-        reply_to_message_id: int | None,
-        source_text: str | None,
-        source_kind: str,
-    ):
-        try:
-            chat = self.db.get_chat(chat_id) or {}
-            delay = int(chat.get("response_delay_seconds", 20))
-            delay = delay if delay in {5, 20, 40, 60, 180} else 20
-            await asyncio.sleep(delay)
-            await self.roast(
-                chat_id,
-                target_user_id,
-                reason,
-                mood=mood,
-                reply_to_message_id=reply_to_message_id,
-                source_text=source_text,
-                source_kind=source_kind,
-            )
+        except asyncio.CancelledError:
+            return
         finally:
-            self.pending_reply_chats.discard(chat_id)
+            if self.pending_reply_tasks.get(chat_id) is current:
+                self.pending_reply_tasks.pop(chat_id, None)
 
     async def roast(
         self,
@@ -656,9 +652,9 @@ class AksakalBot:
             return
         context = self.db.recent_context(chat_id, config.context_message_limit)
         if chat.get("hardness_mode", "auto") == "fixed":
-            auto_level = max(1, min(4, int(chat.get("fixed_hardness", 3))))
+            auto_level = max(1, min(5, int(chat.get("fixed_hardness", 3))))
         else:
-            auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
+            auto_level = self.generator.detect_intensity(context, 5)
         personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
         group_words = self.db.top_learned_words(chat_id, None, 18)
         avoided_addresses = self.db.avoided_addresses(chat_id, target_user_id)
