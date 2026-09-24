@@ -313,52 +313,45 @@ class AksakalBot:
             return False
 
     async def maybe_emotional_response(self, chat_id: int, msg: dict[str, Any]):
+        """Автоматический ответ на каждое обычное сообщение пользователя."""
         chat = self.db.get_chat(chat_id)
         if not chat or not chat["enabled"]:
             return
-        now = int(time.time())
-        if now - chat["last_bot_message_at"] < chat["min_interval_minutes"] * 60:
+
+        sender = msg.get("from", {})
+        sender_id = int(sender.get("id", 0))
+        if not sender_id:
             return
 
         context = self.db.recent_context(chat_id, config.context_message_limit)
-        recent_text = [m for m in context[-12:] if m["kind"] in {"message", "sticker", "reaction"}]
-        if len(recent_text) < 3:
-            return
-
         mood = self.generator.detect_mood(context)
 
-        chance_by_mood = {
-            "supportive": 0.42,
-            "stern": 0.38,
-            "calm": 0.28,
-            "wise": 0.18,
-            "playful": min(0.22, 0.08 + len(recent_text) * 0.01),
-        }
-        if random.random() > chance_by_mood[mood]:
-            return
-
-        users = self.db.active_users(chat_id, 2 * 86400)
-        if not users:
-            return
-
-        sender_id = int(msg.get("from", {}).get("id", 0))
-        target = next((u for u in users if int(u["user_id"]) == sender_id), None)
-        if not target:
-            candidates = [u for u in users if now - u["last_roasted_at"] > 2 * 3600]
-            if not candidates:
-                return
-            target = random.choice(candidates[: min(8, len(candidates))])
-
         reasons = {
-            "supportive": "в сообщениях чувствуется грусть или тяжёлое настроение; поддержи человека без шуток",
-            "calm": "в разговоре появилось напряжение; спокойно погаси конфликт",
-            "stern": "в разговоре явная грубость; сурово осади поведение, не унижая человека",
-            "wise": "разговор стал серьёзным; дай короткую уместную мудрую мысль",
-            "playful": "активный разговор; вставь уместный короткий подкол по текущей теме",
+            "supportive": "ответь прямо на последнее сообщение: поддержи человека мягко и без шутки",
+            "calm": "ответь прямо на последнее сообщение и спокойно снизь напряжение",
+            "stern": "ответь прямо на последнее сообщение: сурово осади грубость, но не унижай человека",
+            "wise": "ответь прямо на последнее сообщение короткой уместной мудрой мыслью по теме",
+            "playful": "ответь прямо на последнее сообщение коротким контекстным подколом или ироничной репликой",
         }
-        await self.roast(chat_id, int(target["user_id"]), reasons[mood], mood=mood)
 
-    async def roast(self, chat_id: int, target_user_id: int, reason: str, mood: str | None = None):
+        await self.roast(
+            chat_id,
+            sender_id,
+            reasons[mood],
+            mood=mood,
+            reply_to_message_id=msg.get("message_id"),
+            ignore_cooldown=True,
+        )
+
+    async def roast(
+        self,
+        chat_id: int,
+        target_user_id: int,
+        reason: str,
+        mood: str | None = None,
+        reply_to_message_id: int | None = None,
+        ignore_cooldown: bool = False,
+    ):
         assert self.tg
         chat = self.db.get_chat(chat_id)
         if not chat or not chat["enabled"]:
@@ -370,7 +363,7 @@ class AksakalBot:
         context = self.db.recent_context(chat_id, config.context_message_limit)
         auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
         text = await self.generator.generate(target=target, context=context, level=auto_level, reason=reason, mood=mood)
-        await self.tg.send(chat_id, text)
+        await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
         self.db.mark_roasted(chat_id, target_user_id)
