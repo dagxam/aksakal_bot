@@ -231,6 +231,7 @@ class AksakalBot:
                 user_id,
                 "пользователь поставил реакцию вместо сообщения",
                 source_text=content,
+                source_kind="reaction",
             )
 
     async def handle_command(self, msg: dict[str, Any], text: str):
@@ -345,7 +346,7 @@ class AksakalBot:
             return False
 
     async def maybe_emotional_response(self, chat_id: int, msg: dict[str, Any]):
-        """Автоматический ответ на каждое обычное сообщение пользователя."""
+        """Вмешивается не постоянно, а когда в сообщении есть хороший повод."""
         chat = self.db.get_chat(chat_id)
         if not chat or not chat["enabled"]:
             return
@@ -357,23 +358,74 @@ class AksakalBot:
 
         context = self.db.recent_context(chat_id, config.context_message_limit)
         mood = self.generator.detect_mood(context)
+        source_text = (msg.get("text") or msg.get("caption") or "").strip()
+        is_sticker = bool(msg.get("sticker"))
 
-        reasons = {
-            "supportive": "ответь прямо на последнее сообщение: поддержи человека мягко и без шутки",
-            "calm": "ответь прямо на последнее сообщение и спокойно снизь напряжение",
-            "stern": "ответь прямо на последнее сообщение: сурово осади грубость, но не унижай человека",
-            "wise": "ответь прямо на последнее сообщение короткой уместной мудрой мыслью по теме",
-            "playful": "ответь прямо на последнее сообщение коротким контекстным подколом или ироничной репликой",
-        }
+        # Сохраняем паузу между самостоятельными вмешательствами, чтобы бот не отвечал на всё подряд.
+        now = int(time.time())
+        min_gap = max(90, int(chat.get("min_interval_minutes", 10)) * 60)
+        if now - int(chat.get("last_bot_message_at", 0)) < min_gap:
+            return
+
+        should_reply = False
+        reason = ""
+
+        if is_sticker:
+            # На стикеры Аксакал реагирует заметно чаще и может подколоть жёстче.
+            should_reply = random.random() < 0.58
+            reason = (
+                "человек отправил стикер вместо слов; подшути именно над этим. "
+                "На жёсткости 3–4 можно сказать в духе: хватит картинки кидать, пиши словами; "
+                "ты писать разучился или буквы закончились? Формулировку придумай сам."
+            )
+            source_text = (msg.get("sticker") or {}).get("emoji") or "стикер"
+        elif mood == "supportive":
+            should_reply = random.random() < 0.70
+            reason = "в последнем сообщении чувствуется реальная грусть/усталость; коротко поддержи именно по его смыслу"
+        elif mood == "stern":
+            should_reply = random.random() < 0.70
+            reason = "в последнем сообщении есть явная грубость; коротко и по существу осади именно эту реплику"
+        elif mood == "calm":
+            should_reply = random.random() < 0.42
+            reason = "разговор становится напряжённым; отреагируй на последнее сообщение и слегка сбавь накал"
+        elif mood == "wise":
+            should_reply = random.random() < 0.30
+            reason = "в последнем сообщении есть серьёзная мысль; дай короткий уместный ответ по существу"
+        else:
+            # Для обычного разговора ищем реальный повод для подкола.
+            low = source_text.lower()
+            score = 0
+            if len(source_text) >= 35:
+                score += 1
+            if "?" in source_text or "!" in source_text:
+                score += 1
+            if any(x in low for x in ("ахах", "хаха", "лол", "ору", "ржу", "😂", "🤣")):
+                score += 2
+            if any(x in low for x in ("бред", "чуш", "морос", "клоун", "гений", "эксперт", "жесть", "капец")):
+                score += 2
+            if msg.get("reply_to_message"):
+                score += 1
+            if source_text.count("!") >= 2:
+                score += 1
+
+            chance = {0: 0.04, 1: 0.10, 2: 0.20, 3: 0.32}.get(min(score, 3), 0.32)
+            should_reply = random.random() < chance
+            reason = (
+                "в последнем сообщении есть повод для короткого уместного подкола. "
+                "Подколи только если можешь привязать шутку к конкретному смыслу сообщения."
+            )
+
+        if not should_reply:
+            return
 
         await self.roast(
             chat_id,
             sender_id,
-            reasons[mood],
+            reason,
             mood=mood,
             reply_to_message_id=msg.get("message_id"),
-            source_text=(msg.get("text") or msg.get("caption") or (msg.get("sticker") or {}).get("emoji") or "стикер"),
-            ignore_cooldown=True,
+            source_text=source_text,
+            source_kind="sticker" if is_sticker else "message",
         )
 
     async def roast(
@@ -384,6 +436,7 @@ class AksakalBot:
         mood: str | None = None,
         reply_to_message_id: int | None = None,
         source_text: str | None = None,
+        source_kind: str = "message",
         ignore_cooldown: bool = False,
     ):
         assert self.tg
@@ -410,6 +463,7 @@ class AksakalBot:
             personal_words=personal_words,
             group_words=group_words,
             source_text=source_text,
+            source_kind=source_kind,
         )
         await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         now = int(time.time())
@@ -439,14 +493,21 @@ class AksakalBot:
             users = self.db.active_users(int(chat["chat_id"]), 14 * 86400)
             candidates = [
                 u for u in users
-                if now - int(u["last_roasted_at"]) > 12 * 3600
-                and now - int(u["last_spoken_at"] or 0) > threshold
+                if now - int(u["last_roasted_at"] or 0) > 6 * 3600
             ]
             if not candidates:
                 continue
-            candidates.sort(key=lambda u: (u["last_spoken_at"] or 0, -u["reaction_count"]))
-            target = random.choice(candidates[: min(5, len(candidates))])
-            await self.roast(int(chat["chat_id"]), int(target["user_id"]), "в группе тишина; слегка жёстко зацепи молчуна и спровоцируй разговор")
+            # При тишине выбираем любого знакомого участника, а не обязательно самого молчаливого.
+            target = random.choice(candidates[: min(12, len(candidates))])
+            await self.roast(
+                int(chat["chat_id"]),
+                int(target["user_id"]),
+                "в группе давно тишина. Зацепи выбранного человека короткой смешной фразой и попробуй "
+                "вызвать остальных на разговор. Можно спросить, куда все пропали, или подколоть выбранного "
+                "участника так, чтобы другим захотелось ответить.",
+                source_text="группа давно молчит",
+                source_kind="silence",
+            )
 
 
 if __name__ == "__main__":
