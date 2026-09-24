@@ -76,11 +76,9 @@ class AksakalBot:
 
         explicit_female = [
             r"\bя\s+(?:девушка|женщина)\b",
-            r"\bя\s+не\s+(?:парень|мужчина)\b",
         ]
         explicit_male = [
             r"\bя\s+(?:парень|мужчина)\b",
-            r"\bя\s+не\s+(?:девушка|женщина)\b",
         ]
         if any(re.search(p, low) for p in explicit_female):
             return {"profile": "female", "avoid": [], "explicit": True}
@@ -104,7 +102,7 @@ class AksakalBot:
 
         if denied:
             # Одно отрицание не используем для скрытого вывода о поле.
-            return {"profile": "neutral", "avoid": denied, "explicit": False}
+            return {"profile": None, "avoid": denied, "explicit": False}
         return None
 
 
@@ -243,7 +241,8 @@ class AksakalBot:
             self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
             feedback = self.detect_address_feedback(text)
             if feedback:
-                self.db.set_profile(chat_id, user_id, feedback["profile"])
+                if feedback["profile"]:
+                    self.db.set_profile(chat_id, user_id, feedback["profile"])
                 for token in feedback["avoid"]:
                     self.db.avoid_address(chat_id, user_id, token)
                 await self.roast(
