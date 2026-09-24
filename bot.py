@@ -226,7 +226,12 @@ class AksakalBot:
         self.db.add_message(chat_id, upd.get("message_id", 0), user_id, username, display, "reaction", content)
 
         if reactions and random.random() < 0.08:
-            await self.roast(chat_id, user_id, "пользователь поставил реакцию вместо сообщения")
+            await self.roast(
+                chat_id,
+                user_id,
+                "пользователь поставил реакцию вместо сообщения",
+                source_text=content,
+            )
 
     async def handle_command(self, msg: dict[str, Any], text: str):
         assert self.tg
@@ -367,6 +372,7 @@ class AksakalBot:
             reasons[mood],
             mood=mood,
             reply_to_message_id=msg.get("message_id"),
+            source_text=(msg.get("text") or msg.get("caption") or (msg.get("sticker") or {}).get("emoji") or "стикер"),
             ignore_cooldown=True,
         )
 
@@ -377,6 +383,7 @@ class AksakalBot:
         reason: str,
         mood: str | None = None,
         reply_to_message_id: int | None = None,
+        source_text: str | None = None,
         ignore_cooldown: bool = False,
     ):
         assert self.tg
@@ -402,6 +409,7 @@ class AksakalBot:
             mood=mood,
             personal_words=personal_words,
             group_words=group_words,
+            source_text=source_text,
         )
         await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         now = int(time.time())
