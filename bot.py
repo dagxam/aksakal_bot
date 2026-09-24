@@ -91,7 +91,8 @@ class AksakalBot:
             {"command": "status", "description": "Состояние Аксакала в группе"},
             {"command": "aksakal", "description": "Настройки группы"},
             {"command": "roast", "description": "Подколоть участника ответом на его сообщение"},
-            {"command": "level", "description": "Максимальная жёсткость 1–4 (админ)"},
+            {"command": "hardness", "description": "Жёсткость: auto или 1–4 (админ)"},
+            {"command": "level", "description": "Старый алиас жёсткости (админ)"},
             {"command": "frequency", "description": "Минимальная пауза в минутах (админ)"},
             {"command": "silence", "description": "Когда тормошить молчунов (админ)"},
             {"command": "on", "description": "Включить Аксакала (админ)"},
@@ -245,7 +246,8 @@ class AksakalBot:
                 "/aksakal — настройки\n"
                 "/roast — ответь этой командой на сообщение участника\n"
                 "/profile male|female|neutral — стиль обращения\n"
-                "/level 1..4 — потолок жёсткости (админ)\n"
+                "/hardness auto|1|2|3|4 — режим жёсткости (админ)\n"
+                "/level 1..4 — старый алиас (админ)\n"
                 "/frequency 10..360 — пауза между репликами (админ)\n"
                 "/silence 30..1440 — через сколько минут тишины оживлять чат (админ)\n"
                 "/on /off — включить или выключить (админ)",
@@ -262,7 +264,7 @@ class AksakalBot:
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {'включён' if self.generator.enabled else 'fallback без AI'}\n"
-                f"Автожёсткость: до {c.get('roast_level',3)}/4\n"
+                f"Жёсткость: {('авто до ' + str(c.get('roast_level',3)) + '/4') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/4')}\n"
                 f"Пауза: {c.get('min_interval_minutes',10)} мин\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
@@ -280,7 +282,7 @@ class AksakalBot:
             await self.tg.send(chat_id, "Профиль стиля сохранён.")
             return
 
-        if cmd in {"/on", "/off", "/level", "/frequency", "/silence"}:
+        if cmd in {"/on", "/off", "/level", "/hardness", "/frequency", "/silence"}:
             if not await self.is_admin(chat_id, user_id):
                 await self.tg.send(chat_id, "Эту настройку может менять администратор группы.")
                 return
@@ -290,14 +292,31 @@ class AksakalBot:
             elif cmd == "/off":
                 self.db.update_chat(chat_id, enabled=0)
                 await self.tg.send(chat_id, "Аксакал пока помолчит.")
+            elif cmd == "/hardness":
+                value = arg.lower()
+                if value == "auto":
+                    self.db.update_chat(chat_id, hardness_mode="auto")
+                    await self.tg.send(chat_id, "Жёсткость: AUTO. Аксакал сам выбирает уровень по тону переписки.")
+                else:
+                    try:
+                        n = int(value)
+                        if n not in {1, 2, 3, 4}:
+                            raise ValueError
+                    except ValueError:
+                        await self.tg.send(chat_id, "Использование: /hardness auto или /hardness 1..4")
+                        return
+                    self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
+                    await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
             elif cmd == "/level":
                 try:
-                    n = max(1, min(4, int(arg)))
+                    n = int(arg)
+                    if n not in {1, 2, 3, 4}:
+                        raise ValueError
                 except ValueError:
                     await self.tg.send(chat_id, "Использование: /level 1..4")
                     return
-                self.db.update_chat(chat_id, roast_level=n)
-                await self.tg.send(chat_id, f"Максимальная автожёсткость: {n}/4")
+                self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
+                await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/4")
             elif cmd == "/frequency":
                 try:
                     n = max(10, min(360, int(arg)))
@@ -381,7 +400,10 @@ class AksakalBot:
         if not target:
             return
         context = self.db.recent_context(chat_id, config.context_message_limit)
-        auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
+        if chat.get("hardness_mode", "auto") == "fixed":
+            auto_level = max(1, min(4, int(chat.get("fixed_hardness", 3))))
+        else:
+            auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
         personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
         group_words = self.db.top_learned_words(chat_id, None, 18)
         text = await self.generator.generate(
