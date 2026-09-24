@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS learned_words (
 
 CREATE INDEX IF NOT EXISTS idx_learned_words_chat_count
 ON learned_words(chat_id, user_id, count DESC);
+
+CREATE TABLE IF NOT EXISTS avoided_addresses (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    token TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, user_id, token)
+);
 """
 
 
@@ -144,6 +152,27 @@ class Database:
     def set_profile(self, chat_id: int, user_id: int, profile: str):
         with self.connect() as conn:
             conn.execute("UPDATE users SET style_profile=? WHERE chat_id=? AND user_id=?", (profile, chat_id, user_id))
+
+    def avoid_address(self, chat_id: int, user_id: int, token: str):
+        token = (token or "").strip().lower()
+        if not token:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO avoided_addresses(chat_id,user_id,token,created_at)
+                VALUES(?,?,?,?)
+                """,
+                (chat_id, user_id, token[:32], int(time.time())),
+            )
+
+    def avoided_addresses(self, chat_id: int, user_id: int) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT token FROM avoided_addresses WHERE chat_id=? AND user_id=? ORDER BY created_at ASC",
+                (chat_id, user_id),
+            ).fetchall()
+            return [r["token"] for r in rows]
 
     def add_message(self, chat_id: int, message_id: int, user_id: int | None, username: str, display_name: str, kind: str, content: str):
         now = int(time.time())
