@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS chats (
     last_bot_message_at INTEGER NOT NULL DEFAULT 0,
     last_activity_at INTEGER NOT NULL DEFAULT 0,
     hardness_mode TEXT NOT NULL DEFAULT 'auto',
-    fixed_hardness INTEGER NOT NULL DEFAULT 3
+    fixed_hardness INTEGER NOT NULL DEFAULT 3,
+    response_delay_seconds INTEGER NOT NULL DEFAULT 20
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -87,6 +88,8 @@ class Database:
                 conn.execute("ALTER TABLE chats ADD COLUMN hardness_mode TEXT NOT NULL DEFAULT 'auto'")
             if "fixed_hardness" not in columns:
                 conn.execute("ALTER TABLE chats ADD COLUMN fixed_hardness INTEGER NOT NULL DEFAULT 3")
+            if "response_delay_seconds" not in columns:
+                conn.execute("ALTER TABLE chats ADD COLUMN response_delay_seconds INTEGER NOT NULL DEFAULT 20")
 
     @contextmanager
     def connect(self):
@@ -116,7 +119,7 @@ class Database:
             return dict(row) if row else None
 
     def update_chat(self, chat_id: int, **values):
-        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness"}
+        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness", "response_delay_seconds"}
         pairs = [(k, v) for k, v in values.items() if k in allowed]
         if not pairs:
             return
