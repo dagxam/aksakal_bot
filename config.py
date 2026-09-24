@@ -18,10 +18,10 @@ def _bool(name: str, default: bool) -> bool:
 class Config:
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-mini")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
     database_path: str = os.getenv("DATABASE_PATH", "aksakal.db")
     default_roast_level: int = int(os.getenv("DEFAULT_ROAST_LEVEL", "3"))
-    min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "25"))
+    min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "10"))
     silence_trigger_minutes: int = int(os.getenv("SILENCE_TRIGGER_MINUTES", "180"))
     context_message_limit: int = int(os.getenv("CONTEXT_MESSAGE_LIMIT", "40"))
     ai_enabled: bool = _bool("AI_ENABLED", True)
