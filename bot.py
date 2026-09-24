@@ -42,6 +42,14 @@ class TelegramAPI:
 
 
 class AksakalBot:
+    STOP_WORDS = {
+        "это","как","что","чтобы","когда","тогда","тут","там","где","кто","она","они","оно","его","ее","её",
+        "для","про","под","над","или","если","уже","ещё","еще","вот","был","была","были","будет","есть","нет",
+        "да","не","ни","ну","же","бы","ли","то","из","на","по","за","от","до","во","со","мы","вы","ты","я",
+        "мне","тебе","ему","нам","вам","их","мой","твой","наш","ваш","свой","так","такой","такая","такие",
+        "просто","очень","тоже","только","можно","надо","нужно","потом","сейчас","сегодня","вчера","завтра"
+    }
+
     def __init__(self):
         if not config.telegram_token:
             raise SystemExit("TELEGRAM_BOT_TOKEN не задан. Скопируйте .env.example в .env")
@@ -49,6 +57,15 @@ class AksakalBot:
         self.generator = PhraseGenerator(config.openai_api_key, config.openai_model, config.ai_enabled)
         self.offset = 0
         self.tg: TelegramAPI | None = None
+
+    @classmethod
+    def extract_learning_tokens(cls, text: str) -> list[str]:
+        import re
+        words = re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (text or "").lower())
+        words = [w for w in words if w not in cls.STOP_WORDS and not w.startswith("http") and not w.startswith("@")]
+        # Плюс короткие устойчивые пары — именно они часто становятся локальными мемами.
+        pairs = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1) if len(words[i]) + len(words[i+1]) <= 40]
+        return (words + pairs)[:40]
 
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
@@ -180,6 +197,9 @@ class AksakalBot:
         username = sender.get("username") or ""
         display = " ".join(x for x in [sender.get("first_name"), sender.get("last_name")] if x).strip() or username or str(user_id)
         self.db.add_message(chat_id, msg["message_id"], user_id, username, display, kind, text)
+
+        if kind == "message" and text and not text.startswith("/"):
+            self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
 
         if text.startswith("/"):
             await self.handle_command(msg, text)
@@ -362,7 +382,17 @@ class AksakalBot:
             return
         context = self.db.recent_context(chat_id, config.context_message_limit)
         auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
-        text = await self.generator.generate(target=target, context=context, level=auto_level, reason=reason, mood=mood)
+        personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
+        group_words = self.db.top_learned_words(chat_id, None, 18)
+        text = await self.generator.generate(
+            target=target,
+            context=context,
+            level=auto_level,
+            reason=reason,
+            mood=mood,
+            personal_words=personal_words,
+            group_words=group_words,
+        )
         await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
