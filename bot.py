@@ -67,6 +67,47 @@ class AksakalBot:
         pairs = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1) if len(words[i]) + len(words[i+1]) <= 40]
         return (words + pairs)[:40]
 
+    @staticmethod
+    def detect_address_feedback(text: str) -> dict[str, Any] | None:
+        import re
+        low = " ".join((text or "").lower().replace("ё", "е").split())
+        if not low:
+            return None
+
+        explicit_female = [
+            r"\bя\s+(?:девушка|женщина)\b",
+            r"\bя\s+не\s+(?:парень|мужчина)\b",
+        ]
+        explicit_male = [
+            r"\bя\s+(?:парень|мужчина)\b",
+            r"\bя\s+не\s+(?:девушка|женщина)\b",
+        ]
+        if any(re.search(p, low) for p in explicit_female):
+            return {"profile": "female", "avoid": [], "explicit": True}
+        if any(re.search(p, low) for p in explicit_male):
+            return {"profile": "male", "avoid": [], "explicit": True}
+
+        address_tokens = {
+            "вацок": "male", "уцы": "male", "брат": "male",
+            "тетка": "female", "теткой": "female", "сестра": "female",
+            "ле": "neutral", "йо": "neutral",
+        }
+        denied = []
+        for token in address_tokens:
+            patterns = [
+                rf"\bя\s+не\s+{re.escape(token)}\b",
+                rf"\bне\s+называй\s+меня\s+{re.escape(token)}\b",
+                rf"\bне\s+зови\s+меня\s+{re.escape(token)}\b",
+            ]
+            if any(re.search(p, low) for p in patterns):
+                denied.append(token)
+
+        if denied:
+            # Одно отрицание не используем для скрытого вывода о поле.
+            return {"profile": "neutral", "avoid": denied, "explicit": False}
+        return None
+
+
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
@@ -200,6 +241,22 @@ class AksakalBot:
 
         if kind == "message" and text and not text.startswith("/"):
             self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
+            feedback = self.detect_address_feedback(text)
+            if feedback:
+                self.db.set_profile(chat_id, user_id, feedback["profile"])
+                for token in feedback["avoid"]:
+                    self.db.avoid_address(chat_id, user_id, token)
+                await self.roast(
+                    chat_id,
+                    user_id,
+                    "пользователь поправил обращение. Коротко подшути над поправкой, покажи, что понял, и больше не используй запрещённое обращение",
+                    mood="playful",
+                    reply_to_message_id=msg.get("message_id"),
+                    source_text=text,
+                    source_kind="profile_correction",
+                    ignore_cooldown=True,
+                )
+                return
 
         if text.startswith("/"):
             await self.handle_command(msg, text)
@@ -250,7 +307,7 @@ class AksakalBot:
                 "/status — состояние в группе\n"
                 "/aksakal — настройки\n"
                 "/roast — ответь этой командой на сообщение участника\n"
-                "/profile male|female|neutral — профиль обращения: вацок/тётка/нейтрально\n"
+                "/profile male|female|neutral — вручную поправить стиль обращения (необязательно)\n"
                 "/hardness auto|1|2|3|4 — режим жёсткости (админ)\n"
                 "/frequency 10..360 — пауза между репликами (админ)\n"
                 "/silence 30..1440 — через сколько минут тишины оживлять чат (админ)\n"
@@ -454,6 +511,7 @@ class AksakalBot:
             auto_level = self.generator.detect_intensity(context, int(chat["roast_level"]))
         personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
         group_words = self.db.top_learned_words(chat_id, None, 18)
+        avoided_addresses = self.db.avoided_addresses(chat_id, target_user_id)
         text = await self.generator.generate(
             target=target,
             context=context,
@@ -464,6 +522,7 @@ class AksakalBot:
             group_words=group_words,
             source_text=source_text,
             source_kind=source_kind,
+            avoided_addresses=avoided_addresses,
         )
         await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         now = int(time.time())
