@@ -176,3 +176,29 @@ OPENROUTER_MODEL=openrouter/free
 - получает список последних собственных ответов и обязан менять лексику и конструкцию;
 - проверяет новый ответ на сильное сходство с недавними и при совпадении использует другой вариант;
 - при ошибке основного AI переключается на резервный провайдер, а затем на локальный contextual fallback.
+
+
+### Цепочка резервных моделей
+
+Аксакал умеет использовать несколько AI подряд. Рекомендуемая схема:
+
+1. OpenAI, если ключ настроен;
+2. Groq + Qwen 3.8 27B как быстрый бесплатный независимый резерв;
+3. OpenRouter с автоматическим failover по бесплатным моделям:
+   - `qwen/qwen3.8-27b:free`
+   - `deepseek/deepseek-chat-v3-0324:free`
+   - `qwen/qwen3-235b-a22b-2507:free`
+   - `deepseek/deepseek-r1-0528-qwen3-8b:free`
+   - `openrouter/free`
+
+Настройка:
+
+```env
+GROQ_API_KEY=
+GROQ_MODEL=qwen/qwen3.8-27b
+
+OPENROUTER_API_KEY=
+OPENROUTER_MODELS=qwen/qwen3.8-27b:free,deepseek/deepseek-chat-v3-0324:free,qwen/qwen3-235b-a22b-2507:free,deepseek/deepseek-r1-0528-qwen3-8b:free,openrouter/free
+```
+
+Ключи независимы: если один сервис недоступен, бот пробует следующий. Один OpenRouter-ключ используется для всей внутренней цепочки бесплатных моделей.
