@@ -225,12 +225,14 @@ class PhraseGenerator:
         user_profile: dict[str, Any] | None = None,
         thread_context: list[dict[str, Any]] | None = None,
         humor_style: str = "none",
+        manual_feedback_examples: list[dict[str, Any]] | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
         recent_bot_replies = recent_bot_replies or []
         relevant_memory = relevant_memory or []
         user_profile = user_profile or {}
         thread_context = thread_context or []
+        manual_feedback_examples = manual_feedback_examples or []
         if not self.enabled:
             self.last_error = "нет настроенного AI-провайдера"
             return ""
@@ -299,6 +301,19 @@ class PhraseGenerator:
             f"кому чаще отвечает: {profile_targets}; "
             f"недавние реплики: {profile_recent}"
         )
+
+        good_examples = [
+            (x.get("content") or "").strip()
+            for x in manual_feedback_examples
+            if int(x.get("score") or 0) > 0 and (x.get("content") or "").strip()
+        ][:3]
+        bad_examples = [
+            (x.get("content") or "").strip()
+            for x in manual_feedback_examples
+            if int(x.get("score") or 0) < 0 and (x.get("content") or "").strip()
+        ][:3]
+        good_examples_text = "\n".join(f"+ {x}" for x in good_examples) or "(пока нет)"
+        bad_examples_text = "\n".join(f"- {x}" for x in bad_examples) or "(пока нет)"
 
         recent_reply_text = "\n".join(f"- {x}" for x in recent_bot_replies[:16]) or "(ещё нет)"
         exact_source = (source_text or "").strip()
@@ -425,6 +440,16 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
 ПОВЕДЕНЧЕСКАЯ ПАМЯТЬ ОБ ЭТОМ УЧАСТНИКЕ:
 {user_profile_text}
 Это только наблюдения из самой группы. Не делай из них выводов о здоровье, происхождении, религии, личности или других чувствительных качествах.
+
+РУЧНОЕ ОБУЧЕНИЕ АДМИНИСТРАТОРА:
+Удачные прошлые ответы:
+{good_examples_text}
+
+Неудачные прошлые ответы:
+{bad_examples_text}
+
+Используй хорошие примеры только как ориентир по естественности, ритму и качеству. Не копируй их дословно и не переноси из них факты в новую тему.
+Плохие примеры показывают, каких конструкций и манеры лучше избегать. Смысл текущего сообщения всегда важнее примеров.
 
 ТЕКУЩИЙ ПРИЁМ ЮМОРА: {humor_style}
 Правило приёма: {humor_rules.get(humor_style, humor_rules["none"])}
