@@ -74,6 +74,9 @@ class AksakalBot:
             config.ai_enabled,
             openrouter_api_key=config.openrouter_api_key,
             openrouter_model=config.openrouter_model,
+            openrouter_models=config.openrouter_models,
+            groq_api_key=config.groq_api_key,
+            groq_model=config.groq_model,
         )
         self.offset = 0
         self.tg: TelegramAPI | None = None
