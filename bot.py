@@ -778,6 +778,9 @@ class AksakalBot:
             recent_bot_replies=recent_bot_replies,
             relevant_memory=relevant_memory,
         )
+        if not text or not text.strip():
+            print(f"AI skipped reply in chat {chat_id}: {self.generator.last_error or 'empty response'}")
+            return
         sent = await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         if isinstance(sent, dict) and sent.get("message_id"):
             self.db.add_bot_message(chat_id, int(sent["message_id"]), text)
