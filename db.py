@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS messages (
     display_name TEXT,
     kind TEXT NOT NULL,
     content TEXT,
+    reply_to_message_id INTEGER,
+    reply_to_user_id INTEGER,
     created_at INTEGER NOT NULL
 );
 
@@ -75,6 +77,17 @@ CREATE TABLE IF NOT EXISTS avoided_addresses (
     created_at INTEGER NOT NULL,
     PRIMARY KEY(chat_id, user_id, token)
 );
+
+CREATE TABLE IF NOT EXISTS humor_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    style TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_humor_history_chat_user
+ON humor_history(chat_id, user_id, id DESC);
 """
 
 
@@ -90,6 +103,12 @@ class Database:
                 conn.execute("ALTER TABLE chats ADD COLUMN fixed_hardness INTEGER NOT NULL DEFAULT 3")
             if "response_delay_seconds" not in columns:
                 conn.execute("ALTER TABLE chats ADD COLUMN response_delay_seconds INTEGER NOT NULL DEFAULT 20")
+
+            message_columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+            if "reply_to_message_id" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN reply_to_message_id INTEGER")
+            if "reply_to_user_id" not in message_columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN reply_to_user_id INTEGER")
 
     @contextmanager
     def connect(self):
@@ -177,22 +196,158 @@ class Database:
             ).fetchall()
             return [r["token"] for r in rows]
 
-    def add_message(self, chat_id: int, message_id: int, user_id: int | None, username: str, display_name: str, kind: str, content: str):
+    def add_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        user_id: int | None,
+        username: str,
+        display_name: str,
+        kind: str,
+        content: str,
+        reply_to_message_id: int | None = None,
+        reply_to_user_id: int | None = None,
+    ):
         now = int(time.time())
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO messages(chat_id,telegram_message_id,user_id,username,display_name,kind,content,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (chat_id, message_id, user_id, username, display_name, kind, content[:2000], now),
+                """
+                INSERT INTO messages(
+                    chat_id,telegram_message_id,user_id,username,display_name,kind,content,
+                    reply_to_message_id,reply_to_user_id,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    chat_id, message_id, user_id, username, display_name, kind, content[:2000],
+                    reply_to_message_id, reply_to_user_id, now,
+                ),
             )
             conn.execute("UPDATE chats SET last_activity_at=? WHERE chat_id=?", (now, chat_id))
 
-    def add_bot_message(self, chat_id: int, message_id: int, content: str):
-        """Сохраняет ответ Аксакала в историю, не считая его активностью участников."""
+    def add_bot_message(
+        self,
+        chat_id: int,
+        message_id: int,
+        content: str,
+        reply_to_message_id: int | None = None,
+        reply_to_user_id: int | None = None,
+    ):
+        """Сохраняет ответ Аксакала и его связь с сообщением, на которое он ответил."""
         now = int(time.time())
         with self.connect() as conn:
             conn.execute(
-                "INSERT INTO messages(chat_id,telegram_message_id,user_id,username,display_name,kind,content,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (chat_id, message_id, None, "", "Аксакал", "bot", content[:2000], now),
+                """
+                INSERT INTO messages(
+                    chat_id,telegram_message_id,user_id,username,display_name,kind,content,
+                    reply_to_message_id,reply_to_user_id,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    chat_id, message_id, None, "", "Аксакал", "bot", content[:2000],
+                    reply_to_message_id, reply_to_user_id, now,
+                ),
+            )
+
+    def message_thread(self, chat_id: int, message_id: int | None, max_depth: int = 8) -> list[dict[str, Any]]:
+        """Восстанавливает цепочку Telegram Reply назад от конкретного сообщения."""
+        if not message_id:
+            return []
+        current_id = int(message_id)
+        seen: set[int] = set()
+        chain: list[dict[str, Any]] = []
+        with self.connect() as conn:
+            while current_id and current_id not in seen and len(chain) < max_depth:
+                seen.add(current_id)
+                row = conn.execute(
+                    """
+                    SELECT * FROM messages
+                    WHERE chat_id=? AND telegram_message_id=?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (chat_id, current_id),
+                ).fetchone()
+                if not row:
+                    break
+                item = dict(row)
+                chain.append(item)
+                current_id = int(item.get("reply_to_message_id") or 0)
+        chain.reverse()
+        return chain
+
+    def user_profile_summary(self, chat_id: int, user_id: int) -> dict[str, Any]:
+        """Безопасный поведенческий профиль из фактов самой переписки, без догадок о личности."""
+        with self.connect() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+            if not user:
+                return {}
+
+            tokens = conn.execute(
+                """
+                SELECT token,count FROM learned_words
+                WHERE chat_id=? AND user_id=? AND count>=2
+                ORDER BY count DESC,last_seen_at DESC LIMIT 12
+                """,
+                (chat_id, user_id),
+            ).fetchall()
+
+            recent = conn.execute(
+                """
+                SELECT content,kind,created_at FROM messages
+                WHERE chat_id=? AND user_id=? AND kind IN ('message','sticker')
+                ORDER BY id DESC LIMIT 6
+                """,
+                (chat_id, user_id),
+            ).fetchall()
+
+            partners = conn.execute(
+                """
+                SELECT m.reply_to_user_id AS target_id,
+                       COALESCE(u.display_name, '') AS display_name,
+                       COUNT(*) AS cnt
+                FROM messages m
+                LEFT JOIN users u
+                  ON u.chat_id=m.chat_id AND u.user_id=m.reply_to_user_id
+                WHERE m.chat_id=? AND m.user_id=? AND m.reply_to_user_id IS NOT NULL
+                  AND m.reply_to_user_id!=?
+                GROUP BY m.reply_to_user_id,u.display_name
+                ORDER BY cnt DESC LIMIT 3
+                """,
+                (chat_id, user_id, user_id),
+            ).fetchall()
+
+        info = dict(user)
+        return {
+            "message_count": int(info.get("message_count") or 0),
+            "sticker_count": int(info.get("sticker_count") or 0),
+            "reaction_count": int(info.get("reaction_count") or 0),
+            "style_profile": info.get("style_profile") or "neutral",
+            "frequent_phrases": [dict(x) for x in tokens],
+            "recent_messages": [dict(x) for x in recent],
+            "frequent_reply_targets": [dict(x) for x in partners],
+        }
+
+    def recent_humor_styles(self, chat_id: int, user_id: int, limit: int = 5) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT style FROM humor_history
+                WHERE chat_id=? AND user_id=?
+                ORDER BY id DESC LIMIT ?
+                """,
+                (chat_id, user_id, limit),
+            ).fetchall()
+        return [str(r["style"]) for r in rows]
+
+    def record_humor_style(self, chat_id: int, user_id: int, style: str):
+        if not style or style == "none":
+            return
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO humor_history(chat_id,user_id,style,created_at) VALUES(?,?,?,?)",
+                (chat_id, user_id, style[:32], int(time.time())),
             )
 
     def recent_bot_replies(self, chat_id: int, limit: int = 20) -> list[str]:
