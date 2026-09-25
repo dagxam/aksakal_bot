@@ -734,6 +734,9 @@ class AksakalBot:
             )
         except asyncio.CancelledError:
             return
+        except Exception as e:
+            print(f"delayed reply error in chat {chat_id}: {type(e).__name__}: {e}")
+            return
         finally:
             if self.pending_reply_tasks.get(chat_id) is current:
                 self.pending_reply_tasks.pop(chat_id, None)
