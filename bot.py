@@ -82,6 +82,33 @@ class AksakalBot:
         self.tg: TelegramAPI | None = None
         self.pending_reply_tasks: dict[int, asyncio.Task] = {}
 
+    @staticmethod
+    def reaction_feedback_score(reactions: list[str]) -> int:
+        positive = {"😂", "🤣", "🔥", "❤️", "❤", "👍", "👏", "💯", "😁", "😆", "🥰", "🤝"}
+        negative = {"👎", "🤡", "💩", "🙄", "😒", "🤦", "🤦‍♂️", "🤦‍♀️"}
+        score = sum(1 for x in reactions if x in positive) - sum(1 for x in reactions if x in negative)
+        return max(-2, min(2, score))
+
+    @staticmethod
+    def reply_feedback_score(text: str) -> int:
+        low = " ".join((text or "").lower().replace("ё", "е").split())
+        if not low:
+            return 1
+        negative = (
+            "бред", "чушь", "не смешно", "несмешно", "скучно", "тупо",
+            "неправильно", "не правильно", "неверно", "не верно", "что за бред",
+            "глупо ответил", "опять одно и то же",
+        )
+        positive = (
+            "ахах", "хаха", "точно", "верно", "красава", "хорош", "огонь",
+            "нормально сказал", "правильно", "😂", "🤣", "🔥",
+        )
+        if any(x in low for x in negative):
+            return -1
+        if any(x in low for x in positive):
+            return 2
+        return 1
+
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
         import re
@@ -367,6 +394,16 @@ class AksakalBot:
         reply_from = reply.get("from") or {}
         reply_to_user_id = int(reply_from.get("id", 0) or 0) or None
 
+        if reply_to_message_id and self.db.get_bot_response(chat_id, reply_to_message_id):
+            self.db.set_response_feedback(
+                chat_id,
+                reply_to_message_id,
+                user_id,
+                "reply",
+                self.reply_feedback_score(text),
+                detail=(text or "")[:80],
+            )
+
         self.db.add_message(
             chat_id,
             msg["message_id"],
@@ -408,12 +445,24 @@ class AksakalBot:
         self.db.ensure_chat(chat_id, chat.get("title"), config.default_roast_level, config.min_bot_interval_minutes, config.silence_trigger_minutes)
         user_id = self.db.touch_user(chat_id, user, "reaction")
         reactions = []
-        for r in upd.get("new_reaction", []):
-            reactions.append(r.get("emoji") or "custom_emoji")
+        for reaction in upd.get("new_reaction", []):
+            reactions.append(reaction.get("emoji") or "custom_emoji")
         content = "реакция " + " ".join(reactions) if reactions else "реакция убрана"
         username = user.get("username") or ""
         display = " ".join(x for x in [user.get("first_name"), user.get("last_name")] if x).strip() or username or str(user_id)
-        self.db.add_message(chat_id, upd.get("message_id", 0), user_id, username, display, "reaction", content)
+        message_id = int(upd.get("message_id", 0) or 0)
+        self.db.add_message(chat_id, message_id, user_id, username, display, "reaction", content)
+
+        if message_id and self.db.get_bot_response(chat_id, message_id):
+            self.db.set_response_feedback(
+                chat_id,
+                message_id,
+                user_id,
+                "reaction",
+                self.reaction_feedback_score(reactions),
+                detail=" ".join(reactions),
+            )
+            return
 
         if reactions and random.random() < 0.08:
             await self.roast(
@@ -566,7 +615,8 @@ class AksakalBot:
                 f"Режим: {('AUTO — сам выбираю Нормальный / Злой / Супер злой') if c.get('hardness_mode','auto') == 'auto' else ('Нормальный' if int(c.get('fixed_hardness',3)) <= 2 else 'Злой' if int(c.get('fixed_hardness',3)) <= 4 else 'Супер злой')}\n"
                 f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
-                f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
+                f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений\n"
+                f"Обучение юмору: {self.db.feedback_stats(chat_id)['signals']} сигналов",
             )
             return
 
@@ -810,12 +860,14 @@ class AksakalBot:
         user_profile = self.db.user_profile_summary(chat_id, target_user_id)
         thread_context = self.db.message_thread(chat_id, reply_to_message_id, 8)
         recent_humor_styles = self.db.recent_humor_styles(chat_id, target_user_id, 5)
+        style_preferences = self.db.humor_style_preferences(chat_id, target_user_id)
         humor_style = self.generator.choose_humor_style(
             source_text or "",
             recent_humor_styles,
             mood=mood or "playful",
             level=auto_level,
             has_memory=bool(thread_context or relevant_memory),
+            style_preferences=style_preferences,
         )
         text = await self.generator.generate(
             target=target,
@@ -847,6 +899,13 @@ class AksakalBot:
                 reply_to_user_id=target_user_id,
             )
             self.db.record_humor_style(chat_id, target_user_id, humor_style)
+            self.db.register_bot_response(
+                chat_id,
+                int(sent["message_id"]),
+                target_user_id,
+                humor_style,
+                auto_level,
+            )
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
         self.db.mark_roasted(chat_id, target_user_id)
