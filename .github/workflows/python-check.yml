@@ -86,7 +86,9 @@ jobs:
                   for row in kb["inline_keyboard"]
                   for btn in row
               ]
-              assert "set:hard:5" in callbacks
+              assert "set:hard:normal" in callbacks
+              assert "set:hard:angry" in callbacks
+              assert "set:hard:super" in callbacks
               assert "set:time:3" in callbacks
               print("database/bot smoke test OK")
           finally:
@@ -95,4 +97,24 @@ jobs:
                       os.remove(path + suffix)
                   except FileNotFoundError:
                       pass
+          PY
+
+      - name: Meta-leak filter smoke test
+        run: |
+          python - <<'PY'
+          from generator import PhraseGenerator
+          assert hasattr(PhraseGenerator, "detect_mode")
+          normal = PhraseGenerator.detect_mode(
+              [{"kind":"message","content":"Как лучше поступить в этой ситуации?"}],
+              mood="wise",
+              source_text="Как лучше поступить в этой ситуации?",
+          )
+          angry = PhraseGenerator.detect_mode(
+              [{"kind":"message","content":"Мозгов нет да у тебя"}],
+              mood="playful",
+              source_text="Мозгов нет да у тебя",
+          )
+          assert normal == 1
+          assert angry in {3,5}
+          print("mode selection smoke test OK")
           PY
