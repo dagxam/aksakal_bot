@@ -15,3 +15,16 @@ jobs:
           python-version: "3.12"
       - name: Compile Python files
         run: python -m py_compile bot.py config.py db.py generator.py
+      - name: Smoke test generator signature
+        run: |
+          python - <<'PY'
+          import inspect
+          from generator import PhraseGenerator
+          sig = inspect.signature(PhraseGenerator.generate)
+          required = {"recent_bot_replies", "relevant_memory", "source_text", "source_kind"}
+          missing = required - set(sig.parameters)
+          assert not missing, f"Missing generator parameters: {missing}"
+          g = PhraseGenerator("", "", False)
+          assert g.provider_status() == "fallback без AI"
+          print("generator smoke test OK")
+          PY
