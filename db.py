@@ -88,6 +88,33 @@ CREATE TABLE IF NOT EXISTS humor_history (
 
 CREATE INDEX IF NOT EXISTS idx_humor_history_chat_user
 ON humor_history(chat_id, user_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS bot_responses (
+    chat_id INTEGER NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    target_user_id INTEGER NOT NULL,
+    humor_style TEXT NOT NULL,
+    mode_level INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, telegram_message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_responses_target
+ON bot_responses(chat_id, target_user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS response_feedback (
+    chat_id INTEGER NOT NULL,
+    bot_message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    score INTEGER NOT NULL DEFAULT 0,
+    detail TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, bot_message_id, user_id, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_response_feedback_message
+ON response_feedback(chat_id, bot_message_id);
 """
 
 
@@ -328,6 +355,117 @@ class Database:
             "recent_messages": [dict(x) for x in recent],
             "frequent_reply_targets": [dict(x) for x in partners],
         }
+
+    def register_bot_response(
+        self,
+        chat_id: int,
+        telegram_message_id: int,
+        target_user_id: int,
+        humor_style: str,
+        mode_level: int,
+    ):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO bot_responses(
+                    chat_id,telegram_message_id,target_user_id,humor_style,mode_level,created_at
+                ) VALUES(?,?,?,?,?,?)
+                """,
+                (
+                    chat_id,
+                    telegram_message_id,
+                    target_user_id,
+                    humor_style or "none",
+                    int(mode_level),
+                    int(time.time()),
+                ),
+            )
+
+    def get_bot_response(self, chat_id: int, telegram_message_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM bot_responses WHERE chat_id=? AND telegram_message_id=?",
+                (chat_id, telegram_message_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_response_feedback(
+        self,
+        chat_id: int,
+        bot_message_id: int,
+        user_id: int,
+        source: str,
+        score: int,
+        detail: str = "",
+    ):
+        if not self.get_bot_response(chat_id, bot_message_id):
+            return
+        score = max(-2, min(2, int(score)))
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO response_feedback(
+                    chat_id,bot_message_id,user_id,source,score,detail,updated_at
+                ) VALUES(?,?,?,?,?,?,?)
+                ON CONFLICT(chat_id,bot_message_id,user_id,source) DO UPDATE SET
+                    score=excluded.score,
+                    detail=excluded.detail,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    chat_id,
+                    bot_message_id,
+                    user_id,
+                    source[:24],
+                    score,
+                    (detail or "")[:100],
+                    int(time.time()),
+                ),
+            )
+
+    def humor_style_preferences(self, chat_id: int, target_user_id: int) -> dict[str, float]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    br.humor_style AS style,
+                    SUM(
+                        CASE
+                            WHEN br.target_user_id=? THEN rf.score * 2
+                            ELSE rf.score
+                        END
+                    ) AS weighted_score,
+                    COUNT(*) AS signals
+                FROM bot_responses br
+                JOIN response_feedback rf
+                  ON rf.chat_id=br.chat_id
+                 AND rf.bot_message_id=br.telegram_message_id
+                WHERE br.chat_id=?
+                  AND br.humor_style!='none'
+                  AND rf.score!=0
+                GROUP BY br.humor_style
+                """,
+                (target_user_id, chat_id),
+            ).fetchall()
+
+        result: dict[str, float] = {}
+        for row in rows:
+            signals = max(1, int(row["signals"] or 1))
+            raw = float(row["weighted_score"] or 0)
+            result[str(row["style"])] = raw / (1.0 + 0.20 * max(0, signals - 1))
+        return result
+
+    def feedback_stats(self, chat_id: int) -> dict[str, int]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS signals, COALESCE(SUM(score),0) AS score
+                FROM response_feedback
+                WHERE chat_id=? AND score!=0
+                """,
+                (chat_id,),
+            ).fetchone()
+        return {"signals": int(row["signals"] or 0), "score": int(row["score"] or 0)}
 
     def recent_humor_styles(self, chat_id: int, user_id: int, limit: int = 5) -> list[str]:
         with self.connect() as conn:
