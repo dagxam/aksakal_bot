@@ -910,6 +910,7 @@ class AksakalBot:
         thread_context = self.db.message_thread(chat_id, reply_to_message_id, 8)
         recent_humor_styles = self.db.recent_humor_styles(chat_id, target_user_id, 5)
         style_preferences = self.db.humor_style_preferences(chat_id, target_user_id)
+        manual_feedback_examples = self.db.manual_feedback_examples(chat_id, target_user_id, 8)
         humor_style = self.generator.choose_humor_style(
             source_text or "",
             recent_humor_styles,
@@ -934,6 +935,7 @@ class AksakalBot:
             user_profile=user_profile,
             thread_context=thread_context,
             humor_style=humor_style,
+            manual_feedback_examples=manual_feedback_examples,
         )
         if not text or not text.strip():
             print(f"AI skipped reply in chat {chat_id}: {self.generator.last_error or 'empty response'}")
