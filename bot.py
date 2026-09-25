@@ -422,11 +422,9 @@ class AksakalBot:
             "inline_keyboard": [
                 [
                     {"text": mark("AUTO", mode == "auto"), "callback_data": "set:hard:auto"},
-                    {"text": mark("1", mode == "fixed" and fixed == 1), "callback_data": "set:hard:1"},
-                    {"text": mark("2", mode == "fixed" and fixed == 2), "callback_data": "set:hard:2"},
-                    {"text": mark("3", mode == "fixed" and fixed == 3), "callback_data": "set:hard:3"},
-                    {"text": mark("4", mode == "fixed" and fixed == 4), "callback_data": "set:hard:4"},
-                    {"text": mark("🔥 5", mode == "fixed" and fixed == 5), "callback_data": "set:hard:5"},
+                    {"text": mark("🙂 Нормальный", mode == "fixed" and fixed <= 2), "callback_data": "set:hard:normal"},
+                    {"text": mark("😠 Злой", mode == "fixed" and 3 <= fixed <= 4), "callback_data": "set:hard:angry"},
+                    {"text": mark("🔥 Супер злой", mode == "fixed" and fixed >= 5), "callback_data": "set:hard:super"},
                 ],
                 [
                     {"text": mark("3 сек", delay == 3), "callback_data": "set:time:3"},
@@ -448,7 +446,12 @@ class AksakalBot:
     @staticmethod
     def settings_text(chat: dict[str, Any]) -> str:
         mode = chat.get("hardness_mode", "auto")
-        hardness = "AUTO" if mode == "auto" else f"{int(chat.get('fixed_hardness', 3))}/5"
+        fixed = int(chat.get("fixed_hardness", 3))
+        hardness = (
+            "AUTO"
+            if mode == "auto"
+            else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
+        )
         delay = int(chat.get("response_delay_seconds", 20))
         delay_label = {3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
         return (
@@ -457,7 +460,7 @@ class AksakalBot:
             f"Таймер тишины: {delay_label}\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
-            "Можно нажать кнопку или написать: /hardness 5, /hardness auto, /time 3"
+            "Можно нажать кнопку или написать: /hardness normal, /hardness angry, /hardness super, /hardness auto, /time 3"
         )
 
     async def show_settings(self, chat_id: int):
@@ -491,8 +494,9 @@ class AksakalBot:
         if section == "hard":
             if value == "auto":
                 self.db.update_chat(chat_id, hardness_mode="auto")
-            elif value in {"1", "2", "3", "4", "5"}:
-                self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=int(value))
+            elif value in {"normal", "angry", "super"}:
+                mapped = {"normal": 1, "angry": 3, "super": 5}[value]
+                self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=mapped)
         elif section == "time" and value in {"3", "5", "20", "40", "60", "180"}:
             self.db.update_chat(chat_id, response_delay_seconds=int(value))
         elif section == "bot":
@@ -522,7 +526,7 @@ class AksakalBot:
                 "/status — текущие настройки\n"
                 "/roast — подколоть ответом на сообщение\n"
                 "/test — проверить бота\n\n"
-                "Быстро вручную: /hardness auto|1|2|3|4|5 и /time 3|5|20|40|60|180",
+                "Быстро вручную: /hardness auto|normal|angry|super и /time 3|5|20|40|60|180",
             )
             return
 
@@ -543,7 +547,7 @@ class AksakalBot:
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {self.generator.provider_status()}\n"
-                f"Жёсткость: {('AUTO — сам выбираю 1–5 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/5')}\n"
+                f"Режим: {('AUTO — сам выбираю Нормальный / Злой / Супер злой') if c.get('hardness_mode','auto') == 'auto' else ('Нормальный' if int(c.get('fixed_hardness',3)) <= 2 else 'Злой' if int(c.get('fixed_hardness',3)) <= 4 else 'Супер злой')}\n"
                 f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений",
@@ -573,19 +577,24 @@ class AksakalBot:
                 await self.tg.send(chat_id, "Аксакал пока помолчит.")
             elif cmd in {"/hardness", "/h"}:
                 value = arg.lower()
-                if value == "auto":
+                aliases = {
+                    "auto": "auto",
+                    "normal": "normal", "нормальный": "normal", "норма": "normal", "1": "normal",
+                    "angry": "angry", "злой": "angry", "2": "angry", "3": "angry",
+                    "super": "super", "супер": "super", "суперзлой": "super", "супер-злой": "super", "4": "super", "5": "super",
+                }
+                selected = aliases.get(value)
+                if selected == "auto":
                     self.db.update_chat(chat_id, hardness_mode="auto")
-                    await self.tg.send(chat_id, "Жёсткость: AUTO. Аксакал сам выбирает уровень по тону переписки.")
+                    await self.tg.send(chat_id, "Режим: AUTO. Аксакал сам выбирает Нормальный, Злой или Супер злой по разговору.")
+                elif selected in {"normal", "angry", "super"}:
+                    mapped = {"normal": 1, "angry": 3, "super": 5}[selected]
+                    label = {"normal": "Нормальный", "angry": "Злой", "super": "Супер злой"}[selected]
+                    self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=mapped)
+                    await self.tg.send(chat_id, f"Режим зафиксирован: {label}")
                 else:
-                    try:
-                        n = int(value)
-                        if n not in {1, 2, 3, 4, 5}:
-                            raise ValueError
-                    except ValueError:
-                        await self.tg.send(chat_id, "Использование: /hardness auto или /hardness 1..5")
-                        return
-                    self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=n)
-                    await self.tg.send(chat_id, f"Жёсткость зафиксирована: {n}/5")
+                    await self.tg.send(chat_id, "Использование: /hardness auto | normal | angry | super")
+                    return
             elif cmd in {"/time", "/t"}:
                 try:
                     n = int(arg)
@@ -762,9 +771,10 @@ class AksakalBot:
             return
         context = self.db.recent_context(chat_id, config.context_message_limit)
         if chat.get("hardness_mode", "auto") == "fixed":
-            auto_level = max(1, min(5, int(chat.get("fixed_hardness", 3))))
+            fixed = int(chat.get("fixed_hardness", 3))
+            auto_level = 1 if fixed <= 2 else 3 if fixed <= 4 else 5
         else:
-            auto_level = self.generator.detect_intensity(context, 5)
+            auto_level = self.generator.detect_mode(context, mood=mood, source_text=source_text or "")
         personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
         group_words = self.db.top_learned_words(chat_id, None, 18)
         avoided_addresses = self.db.avoided_addresses(chat_id, target_user_id)
