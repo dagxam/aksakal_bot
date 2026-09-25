@@ -15,12 +15,24 @@ class PhraseGenerator:
         *,
         openrouter_api_key: str = "",
         openrouter_model: str = "openrouter/free",
+        openrouter_models: str = "",
+        groq_api_key: str = "",
+        groq_model: str = "qwen/qwen3.8-27b",
     ):
         self.openai_api_key = api_key
         self.model = model
         self.openrouter_api_key = openrouter_api_key
         self.openrouter_model = openrouter_model
-        self.enabled = enabled and bool(api_key or openrouter_api_key)
+        self.openrouter_models = [
+            x.strip()
+            for x in (openrouter_models or openrouter_model or "openrouter/free").split(",")
+            if x.strip()
+        ]
+        if not self.openrouter_models:
+            self.openrouter_models = ["openrouter/free"]
+        self.groq_api_key = groq_api_key
+        self.groq_model = groq_model
+        self.enabled = enabled and bool(api_key or openrouter_api_key or groq_api_key)
         self.last_provider = ""
         self.last_error = ""
 
@@ -28,8 +40,10 @@ class PhraseGenerator:
         providers = []
         if self.openai_api_key:
             providers.append("OpenAI")
+        if self.groq_api_key:
+            providers.append(f"Groq/{self.groq_model}")
         if self.openrouter_api_key:
-            providers.append("OpenRouter Free")
+            providers.append("OpenRouter[" + " → ".join(self.openrouter_models) + "]")
         if not providers:
             return "AI НЕ НАСТРОЕН — автоматические ответы отключены"
         status = " → ".join(providers)
@@ -351,11 +365,7 @@ class PhraseGenerator:
             "max_output_tokens": 140,
         }
 
-        async def call_provider(name: str, url: str, key: str, model: str) -> str:
-            payload = dict(base_payload)
-            payload["model"] = model
-            if name == "OpenAI":
-                payload["reasoning"] = {"effort": "low"}
+        async def call_responses(name: str, url: str, key: str, payload: dict[str, Any]) -> tuple[str, str]:
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             timeout = aiohttp.ClientTimeout(total=25)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -364,21 +374,76 @@ class PhraseGenerator:
                         body = await resp.text()
                         raise RuntimeError(f"{name} HTTP {resp.status}: {body[:700]}")
                     data = await resp.json()
-            return self._extract_text(data).strip().replace("\n", " ")
+            model_used = data.get("model") or name
+            return self._extract_text(data).strip().replace("\n", " "), str(model_used)
 
-        providers = []
+        async def call_groq() -> tuple[str, str]:
+            payload = {
+                "model": self.groq_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 180,
+                "temperature": 0.9,
+            }
+            headers = {"Authorization": f"Bearer {self.groq_api_key}", "Content-Type": "application/json"}
+            timeout = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
+                    if resp.status >= 300:
+                        body = await resp.text()
+                        raise RuntimeError(f"Groq HTTP {resp.status}: {body[:700]}")
+                    data = await resp.json()
+            choices = data.get("choices") or []
+            content = ""
+            if choices:
+                content = ((choices[0].get("message") or {}).get("content") or "").strip()
+            return content.replace("\n", " "), str(data.get("model") or self.groq_model)
+
+        attempts: list[tuple[str, Any]] = []
+
         if self.openai_api_key:
-            providers.append(("OpenAI", "https://api.openai.com/v1/responses", self.openai_api_key, self.model))
+            async def try_openai():
+                payload = dict(base_payload)
+                payload["model"] = self.model
+                payload["reasoning"] = {"effort": "low"}
+                return await call_responses(
+                    "OpenAI",
+                    "https://api.openai.com/v1/responses",
+                    self.openai_api_key,
+                    payload,
+                )
+            attempts.append(("OpenAI", try_openai))
+
+        if self.groq_api_key:
+            attempts.append(("Groq", call_groq))
+
         if self.openrouter_api_key:
-            providers.append(("OpenRouter", "https://openrouter.ai/api/v1/responses", self.openrouter_api_key, self.openrouter_model))
+            async def try_openrouter():
+                payload = dict(base_payload)
+                # OpenRouter сам перебирает список по порядку, если первичная модель
+                # недоступна, rate-limited или отказалась отвечать.
+                payload["models"] = self.openrouter_models
+                return await call_responses(
+                    "OpenRouter",
+                    "https://openrouter.ai/api/v1/responses",
+                    self.openrouter_api_key,
+                    payload,
+                )
+            attempts.append(("OpenRouter", try_openrouter))
 
         errors = []
         text = ""
-        for provider in providers:
+        provider_label = ""
+        model_used = ""
+
+        for provider_name, attempt in attempts:
             try:
-                text = await call_provider(*provider)
-                if text:
+                candidate, used = await attempt()
+                if candidate:
+                    text = candidate
+                    provider_label = provider_name
+                    model_used = used
                     break
+                errors.append(f"{provider_name}: empty response")
             except Exception as exc:
                 errors.append(str(exc))
                 print(f"AI provider error: {exc}")
@@ -390,7 +455,7 @@ class PhraseGenerator:
                 print("All AI providers failed:", " | ".join(errors))
             return ""
 
-        self.last_provider = provider[0] if 'provider' in locals() else "AI"
+        self.last_provider = f"{provider_label}/{model_used}"
         self.last_error = ""
 
         if not text.startswith(f"{mention} — "):
