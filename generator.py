@@ -86,10 +86,30 @@ FALLBACKS = {
 
 
 class PhraseGenerator:
-    def __init__(self, api_key: str, model: str, enabled: bool = True):
-        self.api_key = api_key
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        enabled: bool = True,
+        *,
+        openrouter_api_key: str = "",
+        openrouter_model: str = "openrouter/free",
+    ):
+        self.openai_api_key = api_key
         self.model = model
-        self.enabled = enabled and bool(api_key)
+        self.openrouter_api_key = openrouter_api_key
+        self.openrouter_model = openrouter_model
+        self.enabled = enabled and bool(api_key or openrouter_api_key)
+
+    def provider_status(self) -> str:
+        providers = []
+        if self.openai_api_key:
+            providers.append("OpenAI")
+        if self.openrouter_api_key:
+            providers.append("OpenRouter Free")
+        if not providers:
+            return "fallback без AI"
+        return " → ".join(providers) + " — контекстные ответы"
 
     @staticmethod
     def mention(user: dict[str, Any]) -> str:
@@ -109,8 +129,24 @@ class PhraseGenerator:
         source_text: str | None = None,
         source_kind: str = "message",
         avoided_addresses: list[str] | None = None,
+        recent_bot_replies: list[str] | None = None,
+        relevant_memory: list[dict[str, Any]] | None = None,
     ) -> str:
         mention = self.mention(user)
+        recent_norm = {
+            re.sub(r"\W+", " ", x.lower()).strip()
+            for x in (recent_bot_replies or [])
+            if x
+        }
+
+        def fresh_choice(options: list[str]) -> str:
+            if not options:
+                return f"{mention} — понял."
+            fresh = [
+                x for x in options
+                if re.sub(r"\W+", " ", x.lower()).strip() not in recent_norm
+            ]
+            return random.choice(fresh or options)
         profile = user.get("style_profile", "neutral")
         avoided = {x.lower().replace("ё", "е") for x in (avoided_addresses or [])}
         choices = {
@@ -129,7 +165,7 @@ class PhraseGenerator:
                 f"{mention} — всё, запомнил. Второй раз такой роскоши не будет.",
                 f"{mention} — понял тебя. Видишь, даже старших иногда приходится обучать.",
             ]
-            return random.choice(correction_lines)
+            return fresh_choice(correction_lines)
         if source_kind == "greeting_correction":
             greeting_lines = {
                 1: [
@@ -153,9 +189,9 @@ class PhraseGenerator:
                     f"{mention} — {prefix}убери это сухое «здравствуйте». Ассаламу алейкум — и разговор пошёл.",
                 ],
             }
-            return random.choice(greeting_lines[max(1, min(5, level))])
+            return fresh_choice(greeting_lines[max(1, min(5, level))])
         if source_kind == "greeting_salam":
-            return random.choice([
+            return fresh_choice([
                 f"{mention} — Ва алейкум ассалам. Вот теперь нормально зашёл.",
                 f"{mention} — Ва алейкум ассалам. Хабар теперь можно начинать.",
                 f"{mention} — Ва алейкум ассалам. Проходи, рассказывай что стало.",
@@ -167,7 +203,7 @@ class PhraseGenerator:
                 f"{mention} — {prefix}словами попробуй, мы тут не выставку стикеров открыли.",
                 f"{mention} — {prefix}ещё один стикер и я решу, что буквы ты принципиально игнорируешь.",
             ]
-            return random.choice(sticker_lines)
+            return fresh_choice(sticker_lines)
         if source_kind == "silence":
             silence_lines = [
                 f"{mention} — {prefix}ты там живой? Разбуди остальных, группа уже пылью покрывается.",
@@ -175,7 +211,7 @@ class PhraseGenerator:
                 f"{mention} — {prefix}куда все пропали? Скажи что-нибудь спорное, сейчас народ соберётся.",
                 f"{mention} — {prefix}группа молчит. Начинай суету, на тебя последняя надежда.",
             ]
-            return random.choice(silence_lines)
+            return fresh_choice(silence_lines)
         if source and mood == "playful":
             compact = re.sub(r"\s+", " ", source)
             if len(compact) > 70:
@@ -185,12 +221,12 @@ class PhraseGenerator:
                 f"{mention} — {prefix}вот это «{compact}» уже требует объяснений.",
                 f"{mention} — {prefix}по теме «{compact}» ты уверенно зашёл, теперь раскрывай мысль.",
             ]
-            return random.choice(topical)
+            return fresh_choice(topical)
         if mood == "playful":
             pool = FALLBACKS["playful"].get(max(1, min(5, level)), FALLBACKS["playful"][2])
         else:
             pool = FALLBACKS.get(mood, FALLBACKS["playful"][2])
-        return random.choice(pool).format(u=mention)
+        return fresh_choice([x.format(u=mention) for x in pool])
 
     @staticmethod
     def _recent_text(context: list[dict[str, Any]], count: int = 12) -> str:
@@ -307,10 +343,13 @@ class PhraseGenerator:
         source_text: str | None = None,
         source_kind: str = "message",
         avoided_addresses: list[str] | None = None,
+        recent_bot_replies: list[str] | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
+        recent_bot_replies = recent_bot_replies or []
+        relevant_memory = relevant_memory or []
         if not self.enabled:
-            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
+            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses, recent_bot_replies)
 
         mention = self.mention(target)
         profile = target.get("style_profile", "neutral")
@@ -319,6 +358,15 @@ class PhraseGenerator:
             who = m.get("display_name") or m.get("username") or "участник"
             transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
+        memory_lines = []
+        seen_memory = set()
+        for m in relevant_memory[:8]:
+            line = f"{m.get('display_name') or 'участник'}: {m.get('content','')}"
+            if line not in seen_memory:
+                seen_memory.add(line)
+                memory_lines.append(line)
+        memory_text = "\n".join(memory_lines) or "(релевантных старых сообщений не найдено)"
+        recent_reply_text = "\n".join(f"- {x}" for x in recent_bot_replies[:16]) or "(ещё нет)"
         exact_source = (source_text or "").strip()
         if not exact_source:
             for m in reversed(context):
@@ -420,6 +468,14 @@ class PhraseGenerator:
 - Никогда не подставляй случайную универсальную фразу вместо реакции на конкретное содержание.
 - На жёсткости 4–5 можно сильнее задевать человека, но только через реально замеченные привычки в этой группе: его повторяющиеся слова, споры, молчание, стикеры, реакции, самоуверенную манеру и т.п. Не выдумывай личные факты.
 
+ДОЛГОВРЕМЕННАЯ ПАМЯТЬ ПО ТЕКУЩЕЙ ТЕМЕ:
+{memory_text}
+Используй её только если она реально связана с текущим сообщением. Не вытаскивай старые темы случайно.
+
+ПОСЛЕДНИЕ ОТВЕТЫ АКСАКАЛА — НЕ ПОВТОРЯЙ ИХ И НЕ ПЕРЕФРАЗИРУЙ СЛИШКОМ БЛИЗКО:
+{recent_reply_text}
+Меняй лексику, ритм, конструкцию и тип шутки. Не начинай несколько ответов подряд одинаково.
+
 Память речи:
 - Частые слова и выражения именно этого участника: {personal_lexicon}
 - Частые слова и выражения этой группы: {group_lexicon}
@@ -449,31 +505,63 @@ class PhraseGenerator:
 - Не используй слово «Аксакал» внутри самой реплики.
 """.strip()
 
-        payload = {
-            "model": self.model,
+        base_payload = {
             "input": prompt,
-            "max_output_tokens": 120,
-            "reasoning": {"effort": "low"},
+            "max_output_tokens": 140,
         }
-        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        try:
+
+        async def call_provider(name: str, url: str, key: str, model: str) -> str:
+            payload = dict(base_payload)
+            payload["model"] = model
+            if name == "OpenAI":
+                payload["reasoning"] = {"effort": "low"}
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             timeout = aiohttp.ClientTimeout(total=25)
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post("https://api.openai.com/v1/responses", json=payload, headers=headers) as resp:
+                async with session.post(url, json=payload, headers=headers) as resp:
                     if resp.status >= 300:
                         body = await resp.text()
-                        print(f"OpenAI API error {resp.status}: {body[:1000]}")
-                        return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
+                        raise RuntimeError(f"{name} HTTP {resp.status}: {body[:700]}")
                     data = await resp.json()
-            text = self._extract_text(data).strip().replace("\n", " ")
-            if not text:
-                return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
-            if not text.startswith(f"{mention} — "):
-                text = f"{mention} — {text.lstrip('-—: ')}"
-            return text[:500]
-        except Exception as e:
-            print(f"OpenAI generation error: {type(e).__name__}: {e}")
-            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses)
+            return self._extract_text(data).strip().replace("\n", " ")
+
+        providers = []
+        if self.openai_api_key:
+            providers.append(("OpenAI", "https://api.openai.com/v1/responses", self.openai_api_key, self.model))
+        if self.openrouter_api_key:
+            providers.append(("OpenRouter", "https://openrouter.ai/api/v1/responses", self.openrouter_api_key, self.openrouter_model))
+
+        errors = []
+        text = ""
+        for provider in providers:
+            try:
+                text = await call_provider(*provider)
+                if text:
+                    break
+            except Exception as exc:
+                errors.append(str(exc))
+                print(f"AI provider error: {exc}")
+
+        if not text:
+            if errors:
+                print("All AI providers failed:", " | ".join(errors))
+            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses, recent_bot_replies)
+
+        if not text.startswith(f"{mention} — "):
+            text = f"{mention} — {text.lstrip('-—: ')}"
+
+        # Защита от почти дословных повторов. При сильном совпадении используем
+        # контекстный локальный fallback вместо очередной одинаковой реплики.
+        import difflib
+        normalized = re.sub(r"\W+", " ", text.lower()).strip()
+        for old in recent_bot_replies[:12]:
+            old_norm = re.sub(r"\W+", " ", old.lower()).strip()
+            if old_norm and difflib.SequenceMatcher(None, normalized, old_norm).ratio() >= 0.78:
+                return self.fallback(
+                    target, mood, level, source_text, source_kind,
+                    avoided_addresses, recent_bot_replies
+                )
+        return text[:500]
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
