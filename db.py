@@ -186,6 +186,61 @@ class Database:
             )
             conn.execute("UPDATE chats SET last_activity_at=? WHERE chat_id=?", (now, chat_id))
 
+    def add_bot_message(self, chat_id: int, message_id: int, content: str):
+        """Сохраняет ответ Аксакала в историю, не считая его активностью участников."""
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO messages(chat_id,telegram_message_id,user_id,username,display_name,kind,content,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (chat_id, message_id, None, "", "Аксакал", "bot", content[:2000], now),
+            )
+
+    def recent_bot_replies(self, chat_id: int, limit: int = 20) -> list[str]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT content FROM messages
+                WHERE chat_id=? AND kind='bot'
+                ORDER BY id DESC LIMIT ?
+                """,
+                (chat_id, limit),
+            ).fetchall()
+        return [r["content"] for r in rows if r["content"]]
+
+    def relevant_messages(self, chat_id: int, query: str, limit: int = 8, scan: int = 600) -> list[dict[str, Any]]:
+        """Дешёвая долговременная память: ищет старые сообщения по пересечению значимых слов."""
+        import re
+        stop = {
+            "это","как","что","чтобы","когда","тогда","тут","там","где","кто","она","они","оно",
+            "его","ее","её","для","про","под","над","или","если","уже","еще","ещё","вот","был","была",
+            "были","будет","есть","нет","да","не","ни","ну","же","бы","ли","то","из","на","по","за","от",
+            "до","во","со","мы","вы","ты","мне","тебе","ему","нам","вам","их","так","просто","очень",
+        }
+        qwords = {
+            w for w in re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (query or "").lower())
+            if w not in stop
+        }
+        if not qwords:
+            return []
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE chat_id=? AND kind IN ('message','bot')
+                ORDER BY id DESC LIMIT ?
+                """,
+                (chat_id, scan),
+            ).fetchall()
+        scored = []
+        for row in rows:
+            item = dict(row)
+            words = set(re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (item.get("content") or "").lower()))
+            overlap = len(qwords & words)
+            if overlap:
+                scored.append((overlap, item.get("created_at", 0), item))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [item for _, _, item in scored[:limit]]
+
     def recent_context(self, chat_id: int, limit: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
