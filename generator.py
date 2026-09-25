@@ -84,6 +84,35 @@ class PhraseGenerator:
 
 
     @staticmethod
+    def choose_humor_style(
+        source_text: str,
+        recent_styles: list[str] | None,
+        *,
+        mood: str,
+        level: int,
+        has_memory: bool,
+    ) -> str:
+        """Выбирает технику юмора, не повторяя последние приёмы подряд."""
+        if mood in {"supportive", "wise"} or PhraseGenerator.is_information_question(source_text):
+            return "none"
+
+        styles = ["dry", "logic", "analogy", "hyperbole", "wordplay"]
+        if has_memory:
+            styles.append("callback")
+        if level >= 5:
+            styles.append("correction")
+
+        recent = [x for x in (recent_styles or []) if x and x != "none"][:3]
+        seed = sum(ord(ch) for ch in (source_text or "")) + len(recent) * 17 + level * 11
+        start = seed % len(styles)
+        ordered = styles[start:] + styles[:start]
+        for style in ordered:
+            if style not in recent:
+                return style
+        return ordered[0]
+
+
+    @staticmethod
     def _recent_text(context: list[dict[str, Any]], count: int = 12) -> str:
         return " ".join(
             (m.get("content") or "")
@@ -183,19 +212,36 @@ class PhraseGenerator:
         avoided_addresses: list[str] | None = None,
         recent_bot_replies: list[str] | None = None,
         relevant_memory: list[dict[str, Any]] | None = None,
+        user_profile: dict[str, Any] | None = None,
+        thread_context: list[dict[str, Any]] | None = None,
+        humor_style: str = "none",
     ) -> str:
         mood = mood or self.detect_mood(context)
         recent_bot_replies = recent_bot_replies or []
         relevant_memory = relevant_memory or []
+        user_profile = user_profile or {}
+        thread_context = thread_context or []
         if not self.enabled:
             self.last_error = "нет настроенного AI-провайдера"
             return ""
 
         profile = target.get("style_profile", "neutral")
         transcript = []
-        for m in context[-30:]:
+        recent_context = context[-30:]
+        by_message_id = {
+            int(m.get("telegram_message_id") or 0): m
+            for m in recent_context
+            if int(m.get("telegram_message_id") or 0)
+        }
+        for m in recent_context:
             who = m.get("display_name") or m.get("username") or "участник"
-            transcript.append(f"{who}: [{m['kind']}] {m.get('content','')}")
+            relation = ""
+            parent_id = int(m.get("reply_to_message_id") or 0)
+            parent = by_message_id.get(parent_id)
+            if parent:
+                parent_name = parent.get("display_name") or parent.get("username") or "участник"
+                relation = f" [ответ {parent_name}]"
+            transcript.append(f"{who}{relation}: [{m['kind']}] {m.get('content','')}")
         transcript_text = "\n".join(transcript) or "(контекста почти нет)"
         memory_lines = []
         seen_memory = set()
@@ -205,6 +251,45 @@ class PhraseGenerator:
                 seen_memory.add(line)
                 memory_lines.append(line)
         memory_text = "\n".join(memory_lines) or "(релевантных старых сообщений не найдено)"
+
+        thread_lines = []
+        thread_by_id = {
+            int(m.get("telegram_message_id") or 0): m
+            for m in thread_context
+            if int(m.get("telegram_message_id") or 0)
+        }
+        for m in thread_context:
+            who = m.get("display_name") or m.get("username") or "участник"
+            parent = thread_by_id.get(int(m.get("reply_to_message_id") or 0))
+            relation = ""
+            if parent:
+                parent_name = parent.get("display_name") or parent.get("username") or "участник"
+                relation = f" → ответ {parent_name}"
+            thread_lines.append(f"{who}{relation}: {m.get('content','')}")
+        thread_text = "\n".join(thread_lines) or "(отдельной reply-цепочки нет)"
+
+        profile_phrases = ", ".join(
+            f"{x.get('token')}×{x.get('count')}"
+            for x in user_profile.get("frequent_phrases", [])[:10]
+        ) or "(ещё не накоплены)"
+        profile_targets = ", ".join(
+            f"{x.get('display_name') or x.get('target_id')}×{x.get('cnt')}"
+            for x in user_profile.get("frequent_reply_targets", [])[:3]
+        ) or "(явных постоянных собеседников нет)"
+        profile_recent = " | ".join(
+            str(x.get("content") or "")
+            for x in user_profile.get("recent_messages", [])[:4]
+            if x.get("content")
+        ) or "(нет)"
+        user_profile_text = (
+            f"сообщений={user_profile.get('message_count',0)}, "
+            f"стикеров={user_profile.get('sticker_count',0)}, "
+            f"реакций={user_profile.get('reaction_count',0)}; "
+            f"повторяющиеся выражения: {profile_phrases}; "
+            f"кому чаще отвечает: {profile_targets}; "
+            f"недавние реплики: {profile_recent}"
+        )
+
         recent_reply_text = "\n".join(f"- {x}" for x in recent_bot_replies[:16]) or "(ещё нет)"
         exact_source = (source_text or "").strip()
         if not exact_source:
@@ -275,6 +360,17 @@ class PhraseGenerator:
             ),
         }
 
+        humor_rules = {
+            "none": "Не выдавливай шутку. Ответь естественно и содержательно.",
+            "dry": "Если шутишь — используй сухую короткую иронию без длинного объяснения.",
+            "logic": "Если шутишь — зацепись за конкретное противоречие или странную логику реплики.",
+            "analogy": "Если шутишь — придумай свежее короткое сравнение именно из смысла этой ситуации.",
+            "hyperbole": "Если шутишь — используй одну точную гиперболу, не повторяя старые конструкции.",
+            "wordplay": "Если есть естественная возможность — используй игру слов или необычный поворот формулировки.",
+            "callback": "Если память действительно связана с темой — аккуратно верни старую реплику или локальный мем группы.",
+            "correction": "Если есть явная языковая ошибка — можно коротко поправить и встроить это в подкол; если ошибки нет, выбери другую деталь.",
+        }
+
         prompt = f"""
 Ты — «Аксакал»: умный, опытный, наблюдательный старший участник живой дагестанской компании.
 Ты не генератор подколов и не шаблонный бот. Сначала пойми смысл разговора, затем ответь так,
@@ -311,6 +407,18 @@ class PhraseGenerator:
 
 Контекст группы — только фон, чтобы понять предыдущую мысль, людей и локальные шутки:
 {transcript_text}
+
+REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
+{thread_text}
+Если сообщение является ответом на другое, эта цепочка важнее случайных соседних сообщений.
+
+ПОВЕДЕНЧЕСКАЯ ПАМЯТЬ ОБ ЭТОМ УЧАСТНИКЕ:
+{user_profile_text}
+Это только наблюдения из самой группы. Не делай из них выводов о здоровье, происхождении, религии, личности или других чувствительных качествах.
+
+ТЕКУЩИЙ ПРИЁМ ЮМОРА: {humor_style}
+Правило приёма: {humor_rules.get(humor_style, humor_rules["none"])}
+Не называй этот приём в ответе. Если он не подходит по смыслу, лучше не шутить вовсе.
 
 ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА СМЫСЛА:
 - Сначала пойми, О ЧЁМ ИМЕННО говорит точное сообщение выше.
@@ -501,12 +609,16 @@ class PhraseGenerator:
             )
             return self._extract_text(data), str(data.get("model") or self.model)
 
-        async def call_groq() -> tuple[str, str]:
+        async def call_groq(
+            input_prompt: str = prompt,
+            max_tokens: int = 420,
+            temperature: float = 0.75,
+        ) -> tuple[str, str]:
             payload = {
                 "model": self.groq_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_completion_tokens": 420,
-                "temperature": 0.75,
+                "messages": [{"role": "user", "content": input_prompt}],
+                "max_completion_tokens": max_tokens,
+                "temperature": temperature,
                 "reasoning_effort": "none",
             }
             data = await post_json(
@@ -519,15 +631,19 @@ class PhraseGenerator:
             content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
             return content, str(data.get("model") or self.groq_model)
 
-        async def call_openrouter(model_id: str) -> tuple[str, str]:
-            # OpenRouter's documented fallback-compatible OpenAI endpoint.
-            # We iterate models ourselves so a low-quality-but-successful answer can also
-            # fall through to the next model, not only HTTP/rate-limit failures.
+        async def call_openrouter(
+            model_id: str,
+            input_prompt: str = prompt,
+            max_tokens: int = 420,
+            temperature: float = 0.8,
+        ) -> tuple[str, str]:
+            # Модели перебираются вручную: так можно переключиться не только при HTTP-ошибке,
+            # но и когда ответ формально успешный, однако слабый по качеству.
             payload = {
                 "model": model_id,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 420,
-                "temperature": 0.8,
+                "messages": [{"role": "user", "content": input_prompt}],
+                "max_tokens": max_tokens,
+                "temperature": temperature,
             }
             data = await post_json(
                 f"OpenRouter/{model_id}",
@@ -551,26 +667,80 @@ class PhraseGenerator:
                 attempts.append((f"OpenRouter/{model_id}", try_model))
 
         errors: list[str] = []
+        chosen = ""
+        chosen_provider = ""
+        chosen_model = ""
 
         for provider_name, attempt in attempts:
             try:
                 raw, model_used = await attempt()
                 candidate, quality_error = validate_candidate(raw)
                 if candidate:
-                    self.last_provider = f"{provider_name} → {model_used}"
-                    self.last_error = ""
-                    return candidate
+                    chosen = candidate
+                    chosen_provider = provider_name
+                    chosen_model = model_used
+                    break
                 errors.append(f"{provider_name}: {quality_error}")
                 print(f"AI quality retry: {provider_name}: {quality_error}")
             except Exception as exc:
                 errors.append(f"{provider_name}: {exc}")
                 print(f"AI provider error: {provider_name}: {exc}")
 
-        self.last_provider = ""
-        self.last_error = " | ".join(errors)[-700:] if errors else "AI не вернул пригодный ответ"
-        if errors:
-            print("All AI attempts failed:", " | ".join(errors))
-        return ""
+        if not chosen:
+            self.last_provider = ""
+            self.last_error = " | ".join(errors)[-700:] if errors else "AI не вернул пригодный ответ"
+            if errors:
+                print("All AI attempts failed:", " | ".join(errors))
+            return ""
+
+        # Второй AI выступает редактором качества. Используем Groq, когда он настроен:
+        # это не блокирует основной ответ, если редактор недоступен или сам написал ерунду.
+        editor_used = False
+        if self.groq_api_key:
+            review_prompt = f"""
+Ты — строгий редактор одной Telegram-реплики. Ничего не объясняй.
+
+Сообщение пользователя:
+{exact_source}
+
+Reply-цепочка:
+{thread_text}
+
+Режим ответа: {behavior_mode}
+Выбранный приём юмора: {humor_style}
+
+Черновик:
+{chosen}
+
+Проверь:
+1) отвечает ли он именно на смысл сообщения и reply-цепочки;
+2) если это вопрос — есть ли реальный полезный ответ;
+3) если это шутка — привязана ли она к конкретной детали, а не универсальна;
+4) не повторяет ли он сообщение пользователя и не звучит ли как шаблонный бот;
+5) нет ли имени пользователя в начале;
+6) нет ли служебного анализа или объяснения внутренних правил.
+
+Если черновик уже хороший, ответь ровно: OK
+Если можно заметно улучшить — верни ТОЛЬКО улучшенную финальную реплику без комментариев и без имени пользователя.
+Не добавляй новые факты, которых нет в черновике/контексте.
+""".strip()
+            try:
+                edited_raw, editor_model = await call_groq(review_prompt, max_tokens=260, temperature=0.25)
+                if edited_raw.strip().upper() != "OK":
+                    edited, edit_error = validate_candidate(edited_raw)
+                    if edited:
+                        chosen = edited
+                        editor_used = True
+                    elif edit_error:
+                        print(f"AI editor rejected its rewrite: {edit_error}")
+                else:
+                    editor_used = True
+            except Exception as exc:
+                print(f"AI editor error: {exc}")
+
+        self.last_provider = f"{chosen_provider} → {chosen_model}" + (" + Groq-editor" if editor_used else "")
+        self.last_error = ""
+        return chosen
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
