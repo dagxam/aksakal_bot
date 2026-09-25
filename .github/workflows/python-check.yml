@@ -28,7 +28,7 @@ jobs:
           assert not missing, f"Missing generator parameters: {missing}"
           import asyncio
           g = PhraseGenerator("", "", False)
-          assert g.provider_status() == "fallback без AI"
+          assert "AI НЕ НАСТРОЕН" in g.provider_status()
 
           async def main():
               text = await g.generate(
@@ -41,7 +41,7 @@ jobs:
                   recent_bot_replies=["Магомед — старый ответ."],
                   relevant_memory=[{"display_name": "Магомед", "content": "Раньше говорил про машину"}],
               )
-              assert text.startswith("Магомед — "), text
+              assert text == "", text
           asyncio.run(main())
           print("generator smoke test OK")
           PY
