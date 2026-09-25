@@ -102,6 +102,20 @@ jobs:
               db.record_humor_style(-100123, uid, "dry")
               assert db.recent_humor_styles(-100123, uid, 3)[0] == "dry"
 
+              db.register_bot_response(-100123, 3, uid, "dry", 3)
+              assert db.get_bot_response(-100123, 3)["humor_style"] == "dry"
+              db.set_response_feedback(-100123, 3, ali_id, "reaction", 1, "😂")
+              prefs = db.humor_style_preferences(-100123, uid)
+              assert prefs["dry"] > 0
+              stats = db.feedback_stats(-100123)
+              assert stats["signals"] == 1
+
+              # Обновление той же реакции не создаёт второй сигнал.
+              db.set_response_feedback(-100123, 3, ali_id, "reaction", -1, "👎")
+              stats2 = db.feedback_stats(-100123)
+              assert stats2["signals"] == 1
+              assert db.humor_style_preferences(-100123, uid)["dry"] < 0
+
               kb = AksakalBot.settings_keyboard(chat)
               callbacks = [
                   btn["callback_data"]
@@ -163,8 +177,10 @@ jobs:
               mood="playful",
               level=3,
               has_memory=True,
+              style_preferences={"callback": 4.0, "wordplay": -3.0},
           )
           assert style not in {"dry", "logic", "analogy"}
+          assert style == "callback"
           assert PhraseGenerator.choose_humor_style(
               "Почему море солёное?",
               [],
@@ -173,4 +189,17 @@ jobs:
               has_memory=False,
           ) == "none"
           print("humor strategy smoke test OK")
+          PY
+
+      - name: Feedback scoring smoke test
+        run: |
+          python - <<'PY'
+          from bot import AksakalBot
+          assert AksakalBot.reaction_feedback_score(["😂", "🔥"]) == 2
+          assert AksakalBot.reaction_feedback_score(["👎"]) == -1
+          assert AksakalBot.reaction_feedback_score([]) == 0
+          assert AksakalBot.reply_feedback_score("ахах, точно") == 2
+          assert AksakalBot.reply_feedback_score("что за бред, не смешно") == -1
+          assert AksakalBot.reply_feedback_score("а почему так?") == 1
+          print("feedback scoring smoke test OK")
           PY
