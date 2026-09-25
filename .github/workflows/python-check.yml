@@ -23,7 +23,10 @@ jobs:
           import inspect
           from generator import PhraseGenerator
           sig = inspect.signature(PhraseGenerator.generate)
-          required = {"recent_bot_replies", "relevant_memory", "source_text", "source_kind"}
+          required = {
+              "recent_bot_replies", "relevant_memory", "source_text", "source_kind",
+              "user_profile", "thread_context", "humor_style",
+          }
           missing = required - set(sig.parameters)
           assert not missing, f"Missing generator parameters: {missing}"
           import asyncio
@@ -68,17 +71,36 @@ jobs:
               assert chat["response_delay_seconds"] == 3
               assert chat["fixed_hardness"] == 5
 
+              ali = {"id": 7, "username": "ali", "first_name": "Али"}
+              ali_id = db.touch_user(-100123, ali, "message")
+              db.add_message(-100123, 1, ali_id, "ali", "Али", "message", "Вчера говорил про машину")
+
               user = {"id": 42, "username": "testuser", "first_name": "Магомед"}
               uid = db.touch_user(-100123, user, "message")
               assert uid == 42
-              db.add_message(-100123, 1, uid, "testuser", "Магомед", "message", "Вчера говорил про машину")
-              db.add_message(-100123, 2, uid, "testuser", "Магомед", "message", "Купил новую машину")
-              db.add_bot_message(-100123, 3, "Магомед — тестовый ответ")
+              db.add_message(
+                  -100123, 2, uid, "testuser", "Магомед", "message", "Купил новую машину",
+                  reply_to_message_id=1, reply_to_user_id=ali_id,
+              )
+              db.learn_tokens(-100123, uid, ["машина", "машина", "новая машина"])
+              db.add_bot_message(-100123, 3, "Тестовый ответ", reply_to_message_id=2, reply_to_user_id=uid)
+
               assert db.recent_context(-100123, 10)
               assert db.recent_bot_replies(-100123, 5)
               memory = db.relevant_messages(-100123, "Купил машину", 5)
               assert memory, "Russian inflection-aware memory lookup returned nothing"
               assert any("Вчера говорил про машину" in x["content"] for x in memory)
+
+              thread = db.message_thread(-100123, 2, 8)
+              assert [x["telegram_message_id"] for x in thread] == [1, 2]
+              assert thread[-1]["reply_to_user_id"] == ali_id
+
+              profile = db.user_profile_summary(-100123, uid)
+              assert profile["message_count"] >= 1
+              assert any(x["display_name"] == "Али" for x in profile["frequent_reply_targets"])
+
+              db.record_humor_style(-100123, uid, "dry")
+              assert db.recent_humor_styles(-100123, uid, 3)[0] == "dry"
 
               kb = AksakalBot.settings_keyboard(chat)
               callbacks = [
@@ -129,4 +151,26 @@ jobs:
           assert not PhraseGenerator.is_information_question("Мозгов нет у тебя, да?")
           assert PhraseGenerator.detect_mode([], mood="playful", source_text="Как работает двигатель?") == 1
           print("question routing smoke test OK")
+          PY
+
+      - name: Humor strategy smoke test
+        run: |
+          python - <<'PY'
+          from generator import PhraseGenerator
+          style = PhraseGenerator.choose_humor_style(
+              "Опять ты про эту машину",
+              ["dry", "logic", "analogy"],
+              mood="playful",
+              level=3,
+              has_memory=True,
+          )
+          assert style not in {"dry", "logic", "analogy"}
+          assert PhraseGenerator.choose_humor_style(
+              "Почему море солёное?",
+              [],
+              mood="playful",
+              level=1,
+              has_memory=False,
+          ) == "none"
+          print("humor strategy smoke test OK")
           PY
