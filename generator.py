@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import random
 import re
 from typing import Any
 import aiohttp
@@ -229,8 +228,8 @@ class PhraseGenerator:
         source_rule = {
             "message": "Это обычное сообщение. Отвечай строго на его смысл.",
             "sticker": (
-                "Это СТИКЕР. Не придумывай тему, которой нет. Подколи именно факт, что человек вместо слов шлёт стикер. "
-                "На жёсткости 4–5 можно колко сказать, что пора писать словами, что буквы не закончились и т.п."
+                "Это стикер. Реагируй именно на то, что человек заменил им обычную реплику. "
+                "Чем выше жёсткость, тем колче замечание, но придумай формулировку самостоятельно."
             ),
             "reaction": "Это реакция/эмодзи. Подколи именно реакцию, не выдумывай новую тему.",
             "silence": (
@@ -242,10 +241,9 @@ class PhraseGenerator:
                 "и не используй запрещённое обращение в этой реплике."
             ),
             "greeting_correction": (
-                "Это обычное приветствие вроде «привет», «здравствуйте» или «здорово». "
-                "Сделай замечание именно про приветствие и предложи здороваться «Ассаламу алейкум». "
-                "Можно пошутить в духе «что за привет, нормально здоровайся», но не приписывай человеку "
-                "национальность, религию или происхождение."
+                "Это обычное светское приветствие. Сделай короткое замечание именно о форме приветствия "
+                "и предложи «Ассаламу алейкум». Формулировку придумай сам, не используй готовый шаблон. "
+                "Не приписывай человеку национальность, религию или происхождение."
             ),
             "greeting_salam": (
                 "Это салам. Начни содержательную часть с «Ва алейкум ассалам» и не ругай человека за приветствие."
@@ -360,12 +358,54 @@ class PhraseGenerator:
 - Не используй слово «Аксакал» внутри самой реплики.
 """.strip()
 
-        base_payload = {
-            "input": prompt,
-            "max_output_tokens": 140,
-        }
+        import difflib
 
-        async def call_responses(name: str, url: str, key: str, payload: dict[str, Any]) -> tuple[str, str]:
+        def normalize(value: str) -> str:
+            return re.sub(r"\W+", " ", (value or "").lower()).strip()
+
+        def validate_candidate(raw_text: str) -> tuple[str, str]:
+            text = (raw_text or "").strip().replace("\n", " ")
+            if not text:
+                return "", "пустой ответ"
+
+            if not text.startswith(f"{mention} — "):
+                text = f"{mention} — {text.lstrip('-—: ')}"
+
+            normalized = normalize(text)
+            source_norm = normalize(source_text or "")
+
+            for old in recent_bot_replies[:16]:
+                old_norm = normalize(old)
+                if old_norm and difflib.SequenceMatcher(None, normalized, old_norm).ratio() >= 0.72:
+                    return "", "слишком похож на недавний ответ"
+
+            answer_body = normalized
+            mention_norm = normalize(mention)
+            if mention_norm and answer_body.startswith(mention_norm):
+                answer_body = answer_body[len(mention_norm):].strip()
+
+            if source_norm and len(source_norm) >= 8:
+                similarity = difflib.SequenceMatcher(None, answer_body, source_norm).ratio()
+                if similarity >= 0.68:
+                    return "", "слишком близко повторяет сообщение пользователя"
+
+            banned_templates = (
+                "требует объяснений",
+                "ты это сейчас серьезно или",
+                "ты это сейчас серьёзно или",
+                "раскрывай мысль",
+                "по теме",
+            )
+            if any(x in answer_body for x in banned_templates):
+                return "", "шаблонная формулировка"
+
+            # Бессодержательные ответы из одного-двух слов для обычного сообщения тоже не отправляем.
+            if source_kind == "message" and len(answer_body.split()) < 3:
+                return "", "слишком короткий бессодержательный ответ"
+
+            return text[:500], ""
+
+        async def post_json(name: str, url: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             timeout = aiohttp.ClientTimeout(total=25)
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -373,128 +413,93 @@ class PhraseGenerator:
                     if resp.status >= 300:
                         body = await resp.text()
                         raise RuntimeError(f"{name} HTTP {resp.status}: {body[:700]}")
-                    data = await resp.json()
-            model_used = data.get("model") or name
-            return self._extract_text(data).strip().replace("\n", " "), str(model_used)
+                    return await resp.json()
+
+        async def call_openai() -> tuple[str, str]:
+            payload = {
+                "model": self.model,
+                "input": prompt,
+                "max_output_tokens": 160,
+                "reasoning": {"effort": "low"},
+            }
+            data = await post_json(
+                "OpenAI",
+                "https://api.openai.com/v1/responses",
+                self.openai_api_key,
+                payload,
+            )
+            return self._extract_text(data), str(data.get("model") or self.model)
 
         async def call_groq() -> tuple[str, str]:
             payload = {
                 "model": self.groq_model,
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 180,
-                "temperature": 0.9,
+                "max_completion_tokens": 180,
+                "temperature": 0.75,
+                "reasoning_effort": "none",
             }
-            headers = {"Authorization": f"Bearer {self.groq_api_key}", "Content-Type": "application/json"}
-            timeout = aiohttp.ClientTimeout(total=25)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post("https://api.groq.com/openai/v1/chat/completions", json=payload, headers=headers) as resp:
-                    if resp.status >= 300:
-                        body = await resp.text()
-                        raise RuntimeError(f"Groq HTTP {resp.status}: {body[:700]}")
-                    data = await resp.json()
+            data = await post_json(
+                "Groq",
+                "https://api.groq.com/openai/v1/chat/completions",
+                self.groq_api_key,
+                payload,
+            )
             choices = data.get("choices") or []
-            content = ""
-            if choices:
-                content = ((choices[0].get("message") or {}).get("content") or "").strip()
-            return content.replace("\n", " "), str(data.get("model") or self.groq_model)
+            content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+            return content, str(data.get("model") or self.groq_model)
+
+        async def call_openrouter(model_id: str) -> tuple[str, str]:
+            # OpenRouter's documented fallback-compatible OpenAI endpoint.
+            # We iterate models ourselves so a low-quality-but-successful answer can also
+            # fall through to the next model, not only HTTP/rate-limit failures.
+            payload = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 180,
+                "temperature": 0.8,
+            }
+            data = await post_json(
+                f"OpenRouter/{model_id}",
+                "https://openrouter.ai/api/v1/chat/completions",
+                self.openrouter_api_key,
+                payload,
+            )
+            choices = data.get("choices") or []
+            content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
+            return content, str(data.get("model") or model_id)
 
         attempts: list[tuple[str, Any]] = []
-
         if self.openai_api_key:
-            async def try_openai():
-                payload = dict(base_payload)
-                payload["model"] = self.model
-                payload["reasoning"] = {"effort": "low"}
-                return await call_responses(
-                    "OpenAI",
-                    "https://api.openai.com/v1/responses",
-                    self.openai_api_key,
-                    payload,
-                )
-            attempts.append(("OpenAI", try_openai))
-
+            attempts.append(("OpenAI", call_openai))
         if self.groq_api_key:
-            attempts.append(("Groq", call_groq))
-
+            attempts.append((f"Groq/{self.groq_model}", call_groq))
         if self.openrouter_api_key:
-            async def try_openrouter():
-                payload = dict(base_payload)
-                # OpenRouter сам перебирает список по порядку, если первичная модель
-                # недоступна, rate-limited или отказалась отвечать.
-                payload["models"] = self.openrouter_models
-                return await call_responses(
-                    "OpenRouter",
-                    "https://openrouter.ai/api/v1/responses",
-                    self.openrouter_api_key,
-                    payload,
-                )
-            attempts.append(("OpenRouter", try_openrouter))
+            for model_id in self.openrouter_models:
+                async def try_model(mid=model_id):
+                    return await call_openrouter(mid)
+                attempts.append((f"OpenRouter/{model_id}", try_model))
 
-        errors = []
-        text = ""
-        provider_label = ""
-        model_used = ""
+        errors: list[str] = []
 
         for provider_name, attempt in attempts:
             try:
-                candidate, used = await attempt()
+                raw, model_used = await attempt()
+                candidate, quality_error = validate_candidate(raw)
                 if candidate:
-                    text = candidate
-                    provider_label = provider_name
-                    model_used = used
-                    break
-                errors.append(f"{provider_name}: empty response")
+                    self.last_provider = f"{provider_name} → {model_used}"
+                    self.last_error = ""
+                    return candidate
+                errors.append(f"{provider_name}: {quality_error}")
+                print(f"AI quality retry: {provider_name}: {quality_error}")
             except Exception as exc:
-                errors.append(str(exc))
-                print(f"AI provider error: {exc}")
+                errors.append(f"{provider_name}: {exc}")
+                print(f"AI provider error: {provider_name}: {exc}")
 
-        if not text:
-            self.last_provider = ""
-            self.last_error = " | ".join(errors)[-500:] if errors else "AI вернул пустой ответ"
-            if errors:
-                print("All AI providers failed:", " | ".join(errors))
-            return ""
-
-        self.last_provider = f"{provider_label}/{model_used}"
-        self.last_error = ""
-
-        if not text.startswith(f"{mention} — "):
-            text = f"{mention} — {text.lstrip('-—: ')}"
-
-        import difflib
-        normalized = re.sub(r"\W+", " ", text.lower()).strip()
-        source_norm = re.sub(r"\W+", " ", (source_text or "").lower()).strip()
-
-        # Не отправляем повтор последних ответов.
-        for old in recent_bot_replies[:16]:
-            old_norm = re.sub(r"\W+", " ", old.lower()).strip()
-            if old_norm and difflib.SequenceMatcher(None, normalized, old_norm).ratio() >= 0.72:
-                self.last_error = "AI сгенерировал повтор недавнего ответа"
-                return ""
-
-        # Не отправляем ответ, который почти просто повторяет сообщение пользователя.
-        answer_body = normalized
-        mention_norm = re.sub(r"\W+", " ", mention.lower()).strip()
-        if mention_norm and answer_body.startswith(mention_norm):
-            answer_body = answer_body[len(mention_norm):].strip()
-        if source_norm and len(source_norm) >= 8:
-            similarity = difflib.SequenceMatcher(None, answer_body, source_norm).ratio()
-            if similarity >= 0.68:
-                self.last_error = "AI слишком близко повторил сообщение пользователя"
-                return ""
-
-        banned_templates = (
-            "требует объяснений",
-            "ты это сейчас серьезно или",
-            "ты это сейчас серьёзно или",
-            "раскрывай мысль",
-            "по теме",
-        )
-        if any(x in answer_body for x in banned_templates):
-            self.last_error = "AI выдал шаблонную фразу"
-            return ""
-
-        return text[:500]
+        self.last_provider = ""
+        self.last_error = " | ".join(errors)[-700:] if errors else "AI не вернул пригодный ответ"
+        if errors:
+            print("All AI attempts failed:", " | ".join(errors))
+        return ""
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
