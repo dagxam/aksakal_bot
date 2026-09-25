@@ -68,7 +68,13 @@ class AksakalBot:
         if not config.telegram_token:
             raise SystemExit("TELEGRAM_BOT_TOKEN не задан. Скопируйте .env.example в .env")
         self.db = Database(config.database_path)
-        self.generator = PhraseGenerator(config.openai_api_key, config.openai_model, config.ai_enabled)
+        self.generator = PhraseGenerator(
+            config.openai_api_key,
+            config.openai_model,
+            config.ai_enabled,
+            openrouter_api_key=config.openrouter_api_key,
+            openrouter_model=config.openrouter_model,
+        )
         self.offset = 0
         self.tg: TelegramAPI | None = None
         self.pending_reply_tasks: dict[int, asyncio.Task] = {}
@@ -76,11 +82,24 @@ class AksakalBot:
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
         import re
-        words = re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (text or "").lower())
-        words = [w for w in words if w not in cls.STOP_WORDS and not w.startswith("http") and not w.startswith("@")]
-        # Плюс короткие устойчивые пары — именно они часто становятся локальными мемами.
-        pairs = [f"{words[i]} {words[i+1]}" for i in range(len(words)-1) if len(words[i]) + len(words[i+1]) <= 40]
-        return (words + pairs)[:40]
+        raw = re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{2,}", (text or "").lower())
+        clean_words = [
+            w for w in raw
+            if w not in cls.STOP_WORDS and not w.startswith("http") and not w.startswith("@")
+        ]
+        phrases: list[str] = []
+        # Фразы строятся из реальных соседних слов, а не из слов после удаления стоп-слов.
+        for size in (2, 3):
+            for i in range(len(raw) - size + 1):
+                chunk = raw[i:i + size]
+                if all(w in cls.STOP_WORDS for w in chunk):
+                    continue
+                phrase = " ".join(chunk)
+                if 5 <= len(phrase) <= 64:
+                    phrases.append(phrase)
+        result = clean_words + phrases
+        # Сохраняем порядок и убираем дубли в одном сообщении.
+        return list(dict.fromkeys(result))[:50]
 
     @staticmethod
     def detect_address_feedback(text: str) -> dict[str, Any] | None:
@@ -460,7 +479,7 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
-                f"AI: {'включён — ответы генерируются по контексту' if self.generator.enabled else 'НЕ ВКЛЮЧЁН — сейчас используются готовые fallback-фразы'}\n"
+                f"AI: {self.generator.provider_status()}\n"
                 f"Жёсткость: {('AUTO — сам выбираю 1–5 по беседе') if c.get('hardness_mode','auto') == 'auto' else ('фиксированная ' + str(c.get('fixed_hardness',3)) + '/5')}\n"
                 f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
@@ -683,6 +702,8 @@ class AksakalBot:
         personal_words = self.db.top_learned_words(chat_id, target_user_id, 14)
         group_words = self.db.top_learned_words(chat_id, None, 18)
         avoided_addresses = self.db.avoided_addresses(chat_id, target_user_id)
+        recent_bot_replies = self.db.recent_bot_replies(chat_id, 24)
+        relevant_memory = self.db.relevant_messages(chat_id, source_text or "", 8, 800)
         text = await self.generator.generate(
             target=target,
             context=context,
@@ -694,8 +715,12 @@ class AksakalBot:
             source_text=source_text,
             source_kind=source_kind,
             avoided_addresses=avoided_addresses,
+            recent_bot_replies=recent_bot_replies,
+            relevant_memory=relevant_memory,
         )
-        await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
+        sent = await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
+        if isinstance(sent, dict) and sent.get("message_id"):
+            self.db.add_bot_message(chat_id, int(sent["message_id"]), text)
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
         self.db.mark_roasted(chat_id, target_user_id)
