@@ -49,3 +49,47 @@ jobs:
           asyncio.run(main())
           print("generator smoke test OK")
           PY
+
+      - name: Smoke test database and bot wiring
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+          from db import Database
+          from bot import AksakalBot
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              db.ensure_chat(-100123, "Тест", 3, 10, 180)
+              db.update_chat(-100123, response_delay_seconds=3, hardness_mode="fixed", fixed_hardness=5)
+              chat = db.get_chat(-100123)
+              assert chat["response_delay_seconds"] == 3
+              assert chat["fixed_hardness"] == 5
+
+              user = {"id": 42, "username": "testuser", "first_name": "Магомед"}
+              uid = db.touch_user(-100123, user, "message")
+              assert uid == 42
+              db.add_message(-100123, 1, uid, "testuser", "Магомед", "message", "Купил новую машину")
+              db.add_bot_message(-100123, 2, "Магомед — тестовый ответ")
+              assert db.recent_context(-100123, 10)
+              assert db.recent_bot_replies(-100123, 5)
+              assert db.relevant_messages(-100123, "машина", 5)
+
+              kb = AksakalBot.settings_keyboard(chat)
+              callbacks = [
+                  btn["callback_data"]
+                  for row in kb["inline_keyboard"]
+                  for btn in row
+              ]
+              assert "set:hard:5" in callbacks
+              assert "set:time:3" in callbacks
+              print("database/bot smoke test OK")
+          finally:
+              for suffix in ("", "-shm", "-wal"):
+                  try:
+                      os.remove(path + suffix)
+                  except FileNotFoundError:
+                      pass
+          PY
