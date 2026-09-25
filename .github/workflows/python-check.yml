@@ -71,11 +71,14 @@ jobs:
               user = {"id": 42, "username": "testuser", "first_name": "Магомед"}
               uid = db.touch_user(-100123, user, "message")
               assert uid == 42
-              db.add_message(-100123, 1, uid, "testuser", "Магомед", "message", "Купил новую машину")
-              db.add_bot_message(-100123, 2, "Магомед — тестовый ответ")
+              db.add_message(-100123, 1, uid, "testuser", "Магомед", "message", "Вчера говорил про машину")
+              db.add_message(-100123, 2, uid, "testuser", "Магомед", "message", "Купил новую машину")
+              db.add_bot_message(-100123, 3, "Магомед — тестовый ответ")
               assert db.recent_context(-100123, 10)
               assert db.recent_bot_replies(-100123, 5)
-              assert db.relevant_messages(-100123, "машина", 5)
+              memory = db.relevant_messages(-100123, "Купил машину", 5)
+              assert memory, "Russian inflection-aware memory lookup returned nothing"
+              assert any("Вчера говорил про машину" in x["content"] for x in memory)
 
               kb = AksakalBot.settings_keyboard(chat)
               callbacks = [
