@@ -233,6 +233,8 @@ class AksakalBot:
             {"command": "settings", "description": "Настройки кнопками"},
             {"command": "status", "description": "Текущие настройки"},
             {"command": "roast", "description": "Подколоть ответом на сообщение"},
+            {"command": "good", "description": "Отметить хороший ответ Аксакала"},
+            {"command": "bad", "description": "Отметить плохой ответ Аксакала"},
             {"command": "test", "description": "Проверить бота"},
         ]
 
@@ -394,7 +396,11 @@ class AksakalBot:
         reply_from = reply.get("from") or {}
         reply_to_user_id = int(reply_from.get("id", 0) or 0) or None
 
-        if reply_to_message_id and self.db.get_bot_response(chat_id, reply_to_message_id):
+        if (
+            reply_to_message_id
+            and not (text or "").startswith("/")
+            and self.db.get_bot_response(chat_id, reply_to_message_id)
+        ):
             self.db.set_response_feedback(
                 chat_id,
                 reply_to_message_id,
@@ -590,6 +596,8 @@ class AksakalBot:
                 "/settings — выбрать режим и время кнопками\n"
                 "/status — текущие настройки\n"
                 "/roast — подколоть ответом на сообщение\n"
+                "/good — ответом на реплику Аксакала: удачный ответ\n"
+                "/bad — ответом на реплику Аксакала: неудачный ответ\n"
                 "/test — проверить бота\n\n"
                 "Быстро вручную: /hardness auto|normal|angry|super и /time 3|5|20|40|60|180",
             )
@@ -616,8 +624,49 @@ class AksakalBot:
                 f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
                 f"Молчание: {c.get('silence_minutes',180)} мин\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений\n"
-                f"Обучение юмору: {self.db.feedback_stats(chat_id)['signals']} сигналов",
+                f"Обучение юмору: {self.db.feedback_stats(chat_id)['signals']} сигналов "
+                f"(баланс {self.db.feedback_stats(chat_id)['score']:+d})",
             )
+            return
+
+        if cmd in {"/good", "/bad"}:
+            if not await self.is_admin(chat_id, user_id):
+                await self.tg.send(chat_id, "Обучать Аксакала вручную может только администратор группы.")
+                return
+
+            reply = msg.get("reply_to_message") or {}
+            reply_message_id = int(reply.get("message_id", 0) or 0)
+            response_meta = self.db.get_bot_response(chat_id, reply_message_id) if reply_message_id else None
+            if not response_meta:
+                await self.tg.send(
+                    chat_id,
+                    "Ответь /good или /bad именно на AI-реплику Аксакала, которую хочешь оценить.",
+                )
+                return
+
+            score = 2 if cmd == "/good" else -2
+            detail = "admin_good" if score > 0 else "admin_bad"
+            self.db.set_response_feedback(
+                chat_id,
+                reply_message_id,
+                user_id,
+                "admin",
+                score,
+                detail=detail,
+            )
+            style = response_meta.get("humor_style") or "none"
+            if cmd == "/good":
+                await self.tg.send(
+                    chat_id,
+                    f"Запомнил: такой ответ удачный. Стиль «{style}» получил сильный плюс.",
+                    reply_to_message_id=reply_message_id,
+                )
+            else:
+                await self.tg.send(
+                    chat_id,
+                    f"Запомнил: так отвечать хуже. Стиль «{style}» получил сильный минус.",
+                    reply_to_message_id=reply_message_id,
+                )
             return
 
         if cmd == "/profile":
