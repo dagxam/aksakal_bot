@@ -216,8 +216,25 @@ class Database:
             "были","будет","есть","нет","да","не","ни","ну","же","бы","ли","то","из","на","по","за","от",
             "до","во","со","мы","вы","ты","мне","тебе","ему","нам","вам","их","так","просто","очень",
         }
+        endings = (
+            "иями","ями","ами","ого","ему","ыми","ими","иях",
+            "ах","ях","ов","ев","ей","ой","ий","ый","ая","яя","ое","ее",
+            "ам","ям","ом","ем","ую","юю","у","ю","а","я","ы","и","е","о",
+        )
+
+        def term_key(word: str) -> str:
+            word = word.lower().replace("ё", "е")
+            if len(word) < 5:
+                return word
+            for ending in endings:
+                if word.endswith(ending) and len(word) - len(ending) >= 4:
+                    return word[:-len(ending)]
+            return word
+
+        query_norm = " ".join((query or "").lower().replace("ё", "е").split())
         qwords = {
-            w for w in re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (query or "").lower())
+            term_key(w)
+            for w in re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", query_norm)
             if w not in stop
         }
         if not qwords:
@@ -234,7 +251,14 @@ class Database:
         scored = []
         for row in rows:
             item = dict(row)
-            words = set(re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", (item.get("content") or "").lower()))
+            content_norm = " ".join((item.get("content") or "").lower().replace("ё", "е").split())
+            # Текущее сообщение уже отдельно передаётся генератору; не выдаём его за старую память.
+            if item.get("kind") == "message" and content_norm == query_norm:
+                continue
+            words = {
+                term_key(w)
+                for w in re.findall(r"[A-Za-zА-Яа-яЁё0-9_+-]{3,}", content_norm)
+            }
             overlap = len(qwords & words)
             if overlap:
                 scored.append((overlap, item.get("created_at", 0), item))
