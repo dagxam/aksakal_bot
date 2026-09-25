@@ -25,7 +25,7 @@ jobs:
           sig = inspect.signature(PhraseGenerator.generate)
           required = {
               "recent_bot_replies", "relevant_memory", "source_text", "source_kind",
-              "user_profile", "thread_context", "humor_style",
+              "user_profile", "thread_context", "humor_style", "manual_feedback_examples",
           }
           missing = required - set(sig.parameters)
           assert not missing, f"Missing generator parameters: {missing}"
@@ -115,6 +115,16 @@ jobs:
               stats2 = db.feedback_stats(-100123)
               assert stats2["signals"] == 1
               assert db.humor_style_preferences(-100123, uid)["dry"] < 0
+
+              db.set_response_feedback(-100123, 3, ali_id, "admin", 2, "admin_good")
+              manual = db.manual_feedback_examples(-100123, uid, 5)
+              assert manual
+              assert manual[0]["score"] == 2
+              assert "Тестовый ответ" in manual[0]["content"]
+
+              db.set_response_feedback(-100123, 3, ali_id, "admin", -2, "admin_bad")
+              manual2 = db.manual_feedback_examples(-100123, uid, 5)
+              assert manual2[0]["score"] == -2
 
               kb = AksakalBot.settings_keyboard(chat)
               callbacks = [
