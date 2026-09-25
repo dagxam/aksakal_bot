@@ -6,85 +6,6 @@ from typing import Any
 import aiohttp
 
 
-FALLBACKS = {
-    "playful": {
-        1: [
-            "{u} — сегодня ты подозрительно серьёзный, жи есть. Это временно?",
-            "{u} — мысль хорошая, не испорть продолжением.",
-            "{u} — спокойно, уцы, пока всё звучит разумно.",
-            "{u} — вот сейчас нормально сказал, не сглазь.",
-            "{u} — редкий случай: даже спорить пока не хочется.",
-            "{u} — мысль понял. Продолжай, пока всё не испортил.",
-            "{u} — сегодня без суеты идёшь, даже непривычно.",
-            "{u} — нормально начал. Финал не подведи.",
-        ],
-        2: [
-            "{u} — уцы, уверенности много. Теперь осталось найти основания.",
-            "{u} — ты так молчишь, будто мнение ещё проходит согласование.",
-            "{u} — хабар пошёл уверенный, факты догонят потом?",
-            "{u} — ты опять начал так, будто уже всех переубедил.",
-            "{u} — спокойно, вацок, мысль ещё можно спасти.",
-            "{u} — ты сейчас мнение выдал или объявление сделал?",
-            "{u} — всё красиво сказал, осталось понять зачем.",
-            "{u} — ещё немного уверенности — и сам себе поверишь окончательно.",
-        ],
-        3: [
-            "{u} — аргументы закончились, а хабар всё идёт.",
-            "{u} — ты сейчас очень смело идёшь туда, где фактов уже нет.",
-            "{u} — уцы, ты спор уже не ведёшь, ты его тащишь на характере.",
-            "{u} — факты вышли, а ты всё ещё на сцене.",
-            "{u} — ты сейчас не объясняешь, ты давишь уверенностью.",
-            "{u} — ещё одно сообщение, и твоя версия станет семейной легендой.",
-            "{u} — моросишь уже красиво, почти профессионально.",
-            "{u} — ты как всегда: сначала уверенно, потом разберёмся.",
-        ],
-        4: [
-            "{u} — ле, если бы уверенность считалась доказательством, спор уже закрыли бы.",
-            "{u} — мысль закончилась раньше сообщения, но ты героически продолжил.",
-            "{u} — уцы, ты сейчас не споришь, ты выживаешь на одной наглости.",
-            "{u} — фактов ноль, подачи как на свадьбе.",
-            "{u} — ты эту мысль так долго толкаешь, она уже сама устала.",
-            "{u} — брат, тут даже твоя уверенность просит сделать паузу.",
-            "{u} — ещё чуть-чуть и спор начнёт извиняться перед всеми.",
-            "{u} — ты так уверенно несёшь это, будто возврат не предусмотрен.",
-        ],
-        5: [
-            "{u} — ты сейчас так зашёл, будто стыд вообще в отпуск отправил.",
-            "{u} — ещё чуть-чуть такой подачи, и группе понадобится возрастное ограничение.",
-            "{u} — у тебя сегодня тормоза сняты, а здравый смысл даже не пристегнулся.",
-            "{u} — ты это написал так уверенно, будто последствия читать не собираешься.",
-            "{u} — мысль дерзкая. Ещё дерзче только то, что ты решил её отправить.",
-            "{u} — сегодня ты явно выбрал режим: сначала сказать, потом уже жить с последствиями.",
-            "{u} — тут уже не подкол нужен, тут свидетелей опрашивать пора.",
-            "{u} — ещё одна такая фраза — и чат сам попросит поставить 18+.",
-        ],
-    },
-    "supportive": [
-        "{u} — сабур. Не держи всё в себе, иногда разговор реально помогает.",
-        "{u} — тяжёлый день не означает тяжёлую жизнь. Держись.",
-        "{u} — выдохни. Не всё нужно решить прямо сейчас.",
-        "{u} — если тяжело, лучше сказать об этом, чем молча тащить всё одному.",
-    ],
-    "calm": [
-        "{u} — сейчас лучше немного остыть, чем потом жалеть о словах.",
-        "{u} — пауза иногда сильнее самого громкого ответа.",
-        "{u} — не спеши отвечать на злости. Через десять минут мысль может звучать иначе.",
-    ],
-    "stern": [
-        "{u} — тормози, да. Грубость аргумент сильнее не делает.",
-        "{u} — если мысль хорошая, ей не нужен крик.",
-        "{u} — тормози. Разговор ещё можно оставить разговором.",
-        "{u} — злость громкая, а правота пока не доказана.",
-    ],
-    "wise": [
-        "{u} — не каждый спор нужно выигрывать. Иногда важнее сохранить уважение.",
-        "{u} — не мороси: половина ошибок начинается там, где вывод делают раньше фактов.",
-        "{u} — слова быстро забываются, а отношение после них остаётся.",
-        "{u} — спокойствие тоже сила, просто она не шумит.",
-    ],
-}
-
-
 class PhraseGenerator:
     def __init__(
         self,
@@ -100,6 +21,8 @@ class PhraseGenerator:
         self.openrouter_api_key = openrouter_api_key
         self.openrouter_model = openrouter_model
         self.enabled = enabled and bool(api_key or openrouter_api_key)
+        self.last_provider = ""
+        self.last_error = ""
 
     def provider_status(self) -> str:
         providers = []
@@ -108,8 +31,13 @@ class PhraseGenerator:
         if self.openrouter_api_key:
             providers.append("OpenRouter Free")
         if not providers:
-            return "fallback без AI"
-        return " → ".join(providers) + " — контекстные ответы"
+            return "AI НЕ НАСТРОЕН — автоматические ответы отключены"
+        status = " → ".join(providers)
+        if self.last_provider:
+            status += f" | последний ответ: {self.last_provider}"
+        if self.last_error:
+            status += f" | ошибка: {self.last_error[:120]}"
+        return status
 
     @staticmethod
     def mention(user: dict[str, Any]) -> str:
@@ -121,113 +49,6 @@ class PhraseGenerator:
             return user["username"].lstrip("@")
         return "участник"
 
-    def fallback(
-        self,
-        user: dict[str, Any],
-        mood: str = "playful",
-        level: int = 2,
-        source_text: str | None = None,
-        source_kind: str = "message",
-        avoided_addresses: list[str] | None = None,
-        recent_bot_replies: list[str] | None = None,
-        relevant_memory: list[dict[str, Any]] | None = None,
-    ) -> str:
-        mention = self.mention(user)
-        recent_norm = {
-            re.sub(r"\W+", " ", x.lower()).strip()
-            for x in (recent_bot_replies or [])
-            if x
-        }
-
-        def fresh_choice(options: list[str]) -> str:
-            if not options:
-                return f"{mention} — понял."
-            fresh = [
-                x for x in options
-                if re.sub(r"\W+", " ", x.lower()).strip() not in recent_norm
-            ]
-            return random.choice(fresh or options)
-        profile = user.get("style_profile", "neutral")
-        avoided = {x.lower().replace("ё", "е") for x in (avoided_addresses or [])}
-        choices = {
-            "male": ["вацок", "уцы", "брат", "ле"],
-            "female": ["тётка", "сестра", "йо", "ле"],
-            "neutral": ["йо", "ле", ""],
-        }.get(profile, ["йо", "ле", ""])
-        choices = [x for x in choices if not x or x.lower().replace("ё", "е") not in avoided]
-        address = random.choice(choices or [""])
-        prefix = f"{address}, " if address else ""
-        source = (source_text or "").strip()
-        if source_kind == "profile_correction":
-            correction_lines = [
-                f"{mention} — понял, понял. Один раз ошибся — уже личное дело завели.",
-                f"{mention} — принято. Поправил меня быстро, будто протокол составлял.",
-                f"{mention} — всё, запомнил. Второй раз такой роскоши не будет.",
-                f"{mention} — понял тебя. Видишь, даже старших иногда приходится обучать.",
-            ]
-            return fresh_choice(correction_lines)
-        if source_kind == "greeting_correction":
-            greeting_lines = {
-                1: [
-                    f"{mention} — привет принят, но у нас красивее: Ассаламу алейкум.",
-                    f"{mention} — давай по-нормальному: Ассаламу алейкум.",
-                ],
-                2: [
-                    f"{mention} — что за «привет»? Ассаламу алейкум говори, звучит как надо.",
-                    f"{mention} — «здравствуйте» оставь для кабинета, тут Ассаламу алейкум.",
-                ],
-                3: [
-                    f"{mention} — ле, это что за «привет»? Нормально здоровайся: Ассаламу алейкум.",
-                    f"{mention} — ты как на приём пришёл. Ассаламу алейкум скажи нормально.",
-                ],
-                4: [
-                    f"{mention} — что за официальный заход? Ассаламу алейкум говори, не мороси.",
-                    f"{mention} — «привет» он написал. Ва государственное учреждение пришёл? Ассаламу алейкум.",
-                ],
-                5: [
-                    f"{mention} — ты с этим «привет» как турист в чат зашёл. Ассаламу алейкум говори нормально.",
-                    f"{mention} — {prefix}убери это сухое «здравствуйте». Ассаламу алейкум — и разговор пошёл.",
-                ],
-            }
-            return fresh_choice(greeting_lines[max(1, min(5, level))])
-        if source_kind == "greeting_salam":
-            return fresh_choice([
-                f"{mention} — Ва алейкум ассалам. Вот теперь нормально зашёл.",
-                f"{mention} — Ва алейкум ассалам. Хабар теперь можно начинать.",
-                f"{mention} — Ва алейкум ассалам. Проходи, рассказывай что стало.",
-            ])
-        if source_kind == "sticker":
-            sticker_lines = [
-                f"{mention} — {prefix}хватит картинки кидать, пиши словами, буквы ещё не закончились.",
-                f"{mention} — {prefix}опять стикер? Ты писать разучился или клавиатура обиделась?",
-                f"{mention} — {prefix}словами попробуй, мы тут не выставку стикеров открыли.",
-                f"{mention} — {prefix}ещё один стикер и я решу, что буквы ты принципиально игнорируешь.",
-            ]
-            return fresh_choice(sticker_lines)
-        if source_kind == "silence":
-            silence_lines = [
-                f"{mention} — {prefix}ты там живой? Разбуди остальных, группа уже пылью покрывается.",
-                f"{mention} — {prefix}давай хоть ты начни хабар, остальные будто телефоны продали.",
-                f"{mention} — {prefix}куда все пропали? Скажи что-нибудь спорное, сейчас народ соберётся.",
-                f"{mention} — {prefix}группа молчит. Начинай суету, на тебя последняя надежда.",
-            ]
-            return fresh_choice(silence_lines)
-        if source and mood == "playful":
-            compact = re.sub(r"\s+", " ", source)
-            if len(compact) > 70:
-                compact = compact[:67].rstrip() + "..."
-            topical = [
-                f"{mention} — {prefix}по «{compact}» ты это сейчас серьёзно или суету наводишь?",
-                f"{mention} — {prefix}вот это «{compact}» уже требует объяснений.",
-                f"{mention} — {prefix}по теме «{compact}» ты уверенно зашёл, теперь раскрывай мысль.",
-            ]
-            return fresh_choice(topical)
-        if mood == "playful":
-            pool = FALLBACKS["playful"].get(max(1, min(5, level)), FALLBACKS["playful"][2])
-        else:
-            pool = FALLBACKS.get(mood, FALLBACKS["playful"][2])
-        return fresh_choice([x.format(u=mention) for x in pool])
-
     @staticmethod
     def _recent_text(context: list[dict[str, Any]], count: int = 12) -> str:
         return " ".join(
@@ -238,8 +59,17 @@ class PhraseGenerator:
 
     @staticmethod
     def detect_mood(context: list[dict[str, Any]]) -> str:
-        text = PhraseGenerator._recent_text(context, 10)
-        if not text.strip():
+        # Главный приоритет — последнее сообщение пользователя. Старый контекст не должен
+        # превращать обычную новую реплику в грусть/конфликт из-за прошлой темы.
+        last = next(
+            (
+                (m.get("content") or "").lower()
+                for m in reversed(context)
+                if m.get("kind") in {"message", "sticker"} and (m.get("content") or "").strip()
+            ),
+            "",
+        )
+        if not last:
             return "playful"
 
         supportive = [
@@ -255,14 +85,14 @@ class PhraseGenerator:
             r"\bдружб", r"\bпредател", r"\bошибк", r"\bвыбор\b", r"\bбудущее\b",
         ]
 
-        if any(re.search(p, text) for p in supportive):
+        if any(re.search(p, last) for p in supportive):
             return "supportive"
-        hostile_hits = sum(bool(re.search(p, text)) for p in hostile)
+        hostile_hits = sum(bool(re.search(p, last)) for p in hostile)
         if hostile_hits >= 2:
             return "stern"
         if hostile_hits == 1:
             return "calm"
-        if any(re.search(p, text) for p in serious):
+        if any(re.search(p, last) for p in serious):
             return "wise"
         return "playful"
 
@@ -350,7 +180,8 @@ class PhraseGenerator:
         recent_bot_replies = recent_bot_replies or []
         relevant_memory = relevant_memory or []
         if not self.enabled:
-            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses, recent_bot_replies)
+            self.last_error = "нет настроенного AI-провайдера"
+            return ""
 
         mention = self.mention(target)
         profile = target.get("style_profile", "neutral")
@@ -428,8 +259,10 @@ class PhraseGenerator:
         }
 
         prompt = f"""
-Ты — Telegram-бот «Аксакал», наблюдательный, остроумный и иногда суровый участник дружеской группы.
-Напиши ОДНУ короткую реплику на русском языке.
+Ты — «Аксакал»: умный, опытный, наблюдательный старший участник живой дагестанской компании.
+Ты не генератор подколов и не шаблонный бот. Сначала пойми смысл разговора, затем ответь так,
+как ответил бы живой взрослый человек с характером, памятью и чувством момента.
+Напиши ОДНУ естественную короткую реплику на русском языке.
 
 ЖЁСТКИЙ ФОРМАТ: ответ начинается ровно с "{mention} — " и дальше одна фраза.
 Никаких вступлений, кавычек, списков, объяснений и подписи. Обычно 5–18 слов, максимум 25.
@@ -465,7 +298,12 @@ class PhraseGenerator:
 - Если это утверждение — отреагируй именно на это утверждение.
 - Если это короткая реплика вроде «да», «нет», «ага», смайла или стикера — используй предыдущую связанную реплику как тему, но не придумывай новую.
 - Не выдумывай факты, которых нет в текущем сообщении или предыдущем контексте.
-- Ты ОБЯЗАН ответить на текущее сообщение после таймера. Если нет повода для подкола — дай короткую естественную реакцию по существу.
+- Ты ОБЯЗАН отвечать НА СМЫСЛ текущего сообщения, а не на отдельные слова из него.
+- Если нет повода для подкола — нормально продолжи разговор, ответь на вопрос, уточни или дай уместную человеческую реакцию.
+- НЕ цитируй и НЕ пересказывай сообщение пользователя обратно ему.
+- Не строй ответ по шаблону «вот это “...” требует объяснений», «ты это серьёзно или...», «по теме “...”» и подобным конструкциям.
+- Не пиши бессодержательные фразы вроде «раскрывай мысль», если из сообщения уже понятен смысл.
+- Если сообщение короткое («с тобой что», «не хочу», «устал», «да ладно») — используй ближайшие 2–5 реплик контекста, чтобы понять, о чём речь.
 - Никогда не подставляй случайную универсальную фразу вместо реакции на конкретное содержание.
 - На жёсткости 4–5 можно сильнее задевать человека, но только через реально замеченные привычки в этой группе: его повторяющиеся слова, споры, молчание, стикеры, реакции, самоуверенную манеру и т.п. Не выдумывай личные факты.
 
@@ -490,7 +328,9 @@ class PhraseGenerator:
 - Иногда, но не в каждом сообщении, естественно используй узнаваемые слова и обороты: «жи есть», «ле», «йо», «сабур», «ахча», «хабар», «чанда», «что стало?», «моросишь», «тормози», «оставь», «суету наводишь».
 - Гендерные обращения бери только из профиля выше: для male допустимы «вацок», «уцы», «брат»; для female — «тётка», «сестра». Не смешивай их.
 - Можно делать бытовые отсылки к чаю, хинкалу, чуду, свадьбам, горам, двору, соседям, родственникам, машине, работе и обычной жизни — только если это реально подходит к контексту.
-- Не превращай речь в карикатуру: 1 местный маркер на реплику максимум, а часто лучше вообще без него.
+- Не превращай речь в карикатуру: местные слова используй редко и только когда они реально звучат естественно.
+- Не начинай каждую реплику с «ле», «йо», «вацок», «уцы». Большинство ответов должны обходиться без них.
+- Аксакал может быть и серьёзным, и ироничным, и коротко мудрым; он не обязан подкалывать каждую реплику.
 - Не приписывай человеку национальность, аул, тейп, религию или происхождение, если это не сказано в чате.
 - Не высмеивай акцент, этничность или религиозность.
 
@@ -544,24 +384,51 @@ class PhraseGenerator:
                 print(f"AI provider error: {exc}")
 
         if not text:
+            self.last_provider = ""
+            self.last_error = " | ".join(errors)[-500:] if errors else "AI вернул пустой ответ"
             if errors:
                 print("All AI providers failed:", " | ".join(errors))
-            return self.fallback(target, mood, level, source_text, source_kind, avoided_addresses, recent_bot_replies)
+            return ""
+
+        self.last_provider = provider[0] if 'provider' in locals() else "AI"
+        self.last_error = ""
 
         if not text.startswith(f"{mention} — "):
             text = f"{mention} — {text.lstrip('-—: ')}"
 
-        # Защита от почти дословных повторов. При сильном совпадении используем
-        # контекстный локальный fallback вместо очередной одинаковой реплики.
         import difflib
         normalized = re.sub(r"\W+", " ", text.lower()).strip()
-        for old in recent_bot_replies[:12]:
+        source_norm = re.sub(r"\W+", " ", (source_text or "").lower()).strip()
+
+        # Не отправляем повтор последних ответов.
+        for old in recent_bot_replies[:16]:
             old_norm = re.sub(r"\W+", " ", old.lower()).strip()
-            if old_norm and difflib.SequenceMatcher(None, normalized, old_norm).ratio() >= 0.78:
-                return self.fallback(
-                    target, mood, level, source_text, source_kind,
-                    avoided_addresses, recent_bot_replies
-                )
+            if old_norm and difflib.SequenceMatcher(None, normalized, old_norm).ratio() >= 0.72:
+                self.last_error = "AI сгенерировал повтор недавнего ответа"
+                return ""
+
+        # Не отправляем ответ, который почти просто повторяет сообщение пользователя.
+        answer_body = normalized
+        mention_norm = re.sub(r"\W+", " ", mention.lower()).strip()
+        if mention_norm and answer_body.startswith(mention_norm):
+            answer_body = answer_body[len(mention_norm):].strip()
+        if source_norm and len(source_norm) >= 8:
+            similarity = difflib.SequenceMatcher(None, answer_body, source_norm).ratio()
+            if similarity >= 0.68:
+                self.last_error = "AI слишком близко повторил сообщение пользователя"
+                return ""
+
+        banned_templates = (
+            "требует объяснений",
+            "ты это сейчас серьезно или",
+            "ты это сейчас серьёзно или",
+            "раскрывай мысль",
+            "по теме",
+        )
+        if any(x in answer_body for x in banned_templates):
+            self.last_error = "AI выдал шаблонную фразу"
+            return ""
+
         return text[:500]
 
     @staticmethod
