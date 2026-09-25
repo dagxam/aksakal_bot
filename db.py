@@ -455,6 +455,42 @@ class Database:
             result[str(row["style"])] = raw / (1.0 + 0.20 * max(0, signals - 1))
         return result
 
+    def manual_feedback_examples(
+        self,
+        chat_id: int,
+        target_user_id: int,
+        limit: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Последние ответы, вручную оценённые администратором, для обучения стиля."""
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    m.content AS content,
+                    rf.score AS score,
+                    br.humor_style AS humor_style,
+                    br.target_user_id AS target_user_id,
+                    rf.updated_at AS updated_at
+                FROM response_feedback rf
+                JOIN bot_responses br
+                  ON br.chat_id=rf.chat_id
+                 AND br.telegram_message_id=rf.bot_message_id
+                JOIN messages m
+                  ON m.chat_id=br.chat_id
+                 AND m.telegram_message_id=br.telegram_message_id
+                 AND m.kind='bot'
+                WHERE rf.chat_id=?
+                  AND rf.source='admin'
+                  AND rf.score!=0
+                ORDER BY
+                    CASE WHEN br.target_user_id=? THEN 0 ELSE 1 END,
+                    rf.updated_at DESC
+                LIMIT ?
+                """,
+                (chat_id, target_user_id, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def feedback_stats(self, chat_id: int) -> dict[str, int]:
         with self.connect() as conn:
             row = conn.execute(
