@@ -182,7 +182,11 @@ class AksakalBot:
             await tg.call("deleteWebhook", drop_pending_updates=False)
 
             me = await tg.call("getMe")
-            await self.configure_bot_profile()
+            try:
+                await self.configure_bot_profile()
+            except Exception as e:
+                # Настройка имени/описания/команд не должна мешать работе самого бота.
+                print(f"bot profile sync warning: {e}")
             print(f"Аксакал запущен: @{me.get('username')}")
             worker = asyncio.create_task(self.silence_worker())
             try:
@@ -191,7 +195,9 @@ class AksakalBot:
                 worker.cancel()
 
     async def configure_bot_profile(self):
+        """Синхронизирует профиль только при реальном изменении и никогда не роняет запуск."""
         assert self.tg
+
         commands = [
             {"command": "start", "description": "Как работает Аксакал"},
             {"command": "settings", "description": "Настройки кнопками"},
@@ -199,14 +205,68 @@ class AksakalBot:
             {"command": "roast", "description": "Подколоть ответом на сообщение"},
             {"command": "test", "description": "Проверить бота"},
         ]
-        await self.tg.call("setMyCommands", commands=commands)
-        await self.tg.call("setMyName", name="Аксакал")
-        await self.tg.call(
+
+        async def safe_sync(label: str, get_method: str, set_method: str, desired: Any, **payload):
+            try:
+                current = await self.tg.call(get_method)
+
+                if isinstance(current, dict):
+                    # getMyName -> {"name": ...}
+                    # getMyDescription -> {"description": ...}
+                    # getMyShortDescription -> {"short_description": ...}
+                    if "name" in current:
+                        current_value = current.get("name", "")
+                    elif "description" in current:
+                        current_value = current.get("description", "")
+                    elif "short_description" in current:
+                        current_value = current.get("short_description", "")
+                    else:
+                        current_value = current
+                else:
+                    current_value = current
+
+                if current_value == desired:
+                    return
+
+                await self.tg.call(set_method, **payload)
+                print(f"bot profile synced: {label}")
+            except Exception as e:
+                # В том числе Telegram 429 retry_after. Это не критично:
+                # polling и вся логика бота должны продолжить работу.
+                print(f"bot profile sync skipped ({label}): {e}")
+
+        # Команды тоже меняем только когда список реально отличается.
+        try:
+            current_commands = await self.tg.call("getMyCommands")
+            normalized_current = [
+                {"command": x.get("command", ""), "description": x.get("description", "")}
+                for x in (current_commands or [])
+            ]
+            if normalized_current != commands:
+                await self.tg.call("setMyCommands", commands=commands)
+                print("bot profile synced: commands")
+        except Exception as e:
+            print(f"bot profile sync skipped (commands): {e}")
+
+        await safe_sync(
+            "name",
+            "getMyName",
+            "setMyName",
+            "Аксакал",
+            name="Аксакал",
+        )
+        await safe_sync(
+            "description",
+            "getMyDescription",
             "setMyDescription",
+            "Живой участник группы: понимает тему разговора, подкалывает, поддерживает, успокаивает и оживляет чат.",
             description="Живой участник группы: понимает тему разговора, подкалывает, поддерживает, успокаивает и оживляет чат.",
         )
-        await self.tg.call(
+        await safe_sync(
+            "short_description",
+            "getMyShortDescription",
             "setMyShortDescription",
+            "Подколы, поддержка, мудрость и живой чат.",
             short_description="Подколы, поддержка, мудрость и живой чат.",
         )
 
