@@ -21,6 +21,16 @@ class Config:
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
     openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "openrouter/free")
+    openrouter_models: str = os.getenv(
+        "OPENROUTER_MODELS",
+        "qwen/qwen3.8-27b:free,"
+        "deepseek/deepseek-chat-v3-0324:free,"
+        "qwen/qwen3-235b-a22b-2507:free,"
+        "deepseek/deepseek-r1-0528-qwen3-8b:free,"
+        "openrouter/free",
+    )
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
     database_path: str = os.getenv("DATABASE_PATH", "aksakal.db")
     default_roast_level: int = int(os.getenv("DEFAULT_ROAST_LEVEL", "3"))
     min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "10"))
