@@ -361,7 +361,23 @@ class AksakalBot:
         user_id = self.db.touch_user(chat_id, sender, kind)
         username = sender.get("username") or ""
         display = " ".join(x for x in [sender.get("first_name"), sender.get("last_name")] if x).strip() or username or str(user_id)
-        self.db.add_message(chat_id, msg["message_id"], user_id, username, display, kind, text)
+
+        reply = msg.get("reply_to_message") or {}
+        reply_to_message_id = int(reply.get("message_id", 0) or 0) or None
+        reply_from = reply.get("from") or {}
+        reply_to_user_id = int(reply_from.get("id", 0) or 0) or None
+
+        self.db.add_message(
+            chat_id,
+            msg["message_id"],
+            user_id,
+            username,
+            display,
+            kind,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_user_id=reply_to_user_id,
+        )
 
         if kind == "message" and text and not text.startswith("/"):
             self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
@@ -632,7 +648,18 @@ class AksakalBot:
             reply = msg.get("reply_to_message")
             if reply and reply.get("from") and not reply["from"].get("is_bot"):
                 target_id = self.db.touch_user(chat_id, reply["from"], "message")
-                await self.roast(chat_id, target_id, "пользователь явно попросил подкол через /roast")
+                reply_text = (reply.get("text") or reply.get("caption") or "").strip()
+                reply_kind = "sticker" if reply.get("sticker") else "message"
+                if reply_kind == "sticker":
+                    reply_text = (reply.get("sticker") or {}).get("emoji") or "стикер"
+                await self.roast(
+                    chat_id,
+                    target_id,
+                    "пользователь явно попросил подкол через /roast",
+                    reply_to_message_id=reply.get("message_id"),
+                    source_text=reply_text,
+                    source_kind=reply_kind,
+                )
             else:
                 await self.tg.send(chat_id, "Ответь командой /roast на сообщение человека.")
 
@@ -780,6 +807,16 @@ class AksakalBot:
         avoided_addresses = self.db.avoided_addresses(chat_id, target_user_id)
         recent_bot_replies = self.db.recent_bot_replies(chat_id, 24)
         relevant_memory = self.db.relevant_messages(chat_id, source_text or "", 8, 800)
+        user_profile = self.db.user_profile_summary(chat_id, target_user_id)
+        thread_context = self.db.message_thread(chat_id, reply_to_message_id, 8)
+        recent_humor_styles = self.db.recent_humor_styles(chat_id, target_user_id, 5)
+        humor_style = self.generator.choose_humor_style(
+            source_text or "",
+            recent_humor_styles,
+            mood=mood or "playful",
+            level=auto_level,
+            has_memory=bool(thread_context or relevant_memory),
+        )
         text = await self.generator.generate(
             target=target,
             context=context,
@@ -793,13 +830,23 @@ class AksakalBot:
             avoided_addresses=avoided_addresses,
             recent_bot_replies=recent_bot_replies,
             relevant_memory=relevant_memory,
+            user_profile=user_profile,
+            thread_context=thread_context,
+            humor_style=humor_style,
         )
         if not text or not text.strip():
             print(f"AI skipped reply in chat {chat_id}: {self.generator.last_error or 'empty response'}")
             return
         sent = await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         if isinstance(sent, dict) and sent.get("message_id"):
-            self.db.add_bot_message(chat_id, int(sent["message_id"]), text)
+            self.db.add_bot_message(
+                chat_id,
+                int(sent["message_id"]),
+                text,
+                reply_to_message_id=reply_to_message_id,
+                reply_to_user_id=target_user_id,
+            )
+            self.db.record_humor_style(chat_id, target_user_id, humor_style)
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
         self.db.mark_roasted(chat_id, target_user_id)
