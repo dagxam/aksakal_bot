@@ -344,6 +344,7 @@ class PhraseGenerator:
         source_kind: str = "message",
         avoided_addresses: list[str] | None = None,
         recent_bot_replies: list[str] | None = None,
+        relevant_memory: list[dict[str, Any]] | None = None,
     ) -> str:
         mood = mood or self.detect_mood(context)
         recent_bot_replies = recent_bot_replies or []
