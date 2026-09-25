@@ -118,3 +118,15 @@ jobs:
           assert angry in {3,5}
           print("mode selection smoke test OK")
           PY
+
+      - name: Question routing smoke test
+        run: |
+          python - <<'PY'
+          from generator import PhraseGenerator
+          assert PhraseGenerator.is_information_question("Как работает редстоун в Minecraft?")
+          assert PhraseGenerator.is_information_question("Почему море солёное?")
+          assert PhraseGenerator.is_information_question("Подскажи как настроить сервер")
+          assert not PhraseGenerator.is_information_question("Мозгов нет у тебя, да?")
+          assert PhraseGenerator.detect_mode([], mood="playful", source_text="Как работает двигатель?") == 1
+          print("question routing smoke test OK")
+          PY
