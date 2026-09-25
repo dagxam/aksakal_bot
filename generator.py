@@ -91,6 +91,7 @@ class PhraseGenerator:
         mood: str,
         level: int,
         has_memory: bool,
+        style_preferences: dict[str, float] | None = None,
     ) -> str:
         """Выбирает технику юмора, не повторяя последние приёмы подряд."""
         if mood in {"supportive", "wise"} or PhraseGenerator.is_information_question(source_text):
@@ -103,13 +104,22 @@ class PhraseGenerator:
             styles.append("correction")
 
         recent = [x for x in (recent_styles or []) if x and x != "none"][:3]
+        preferences = style_preferences or {}
+        candidates = [x for x in styles if x not in recent] or list(styles)
+
+        acceptable = [x for x in candidates if float(preferences.get(x, 0.0)) > -2.0]
+        if acceptable:
+            candidates = acceptable
+
         seed = sum(ord(ch) for ch in (source_text or "")) + len(recent) * 17 + level * 11
-        start = seed % len(styles)
-        ordered = styles[start:] + styles[:start]
-        for style in ordered:
-            if style not in recent:
-                return style
-        return ordered[0]
+        ranked = sorted(
+            candidates,
+            key=lambda x: (
+                -float(preferences.get(x, 0.0)),
+                (styles.index(x) - (seed % len(styles))) % len(styles),
+            ),
+        )
+        return ranked[0]
 
 
     @staticmethod
