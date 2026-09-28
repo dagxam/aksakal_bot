@@ -60,6 +60,67 @@ class PhraseGenerator:
             status += f" | ошибка: {self.last_error[:120]}"
         return status
 
+
+    async def health_check(self) -> dict[str, str]:
+        """Проверяет ключи и доступность API без генерации длинных ответов."""
+        results: dict[str, str] = {}
+        timeout = aiohttp.ClientTimeout(total=12)
+
+        async def get_status(name: str, url: str, headers: dict[str, str]) -> tuple[int, str]:
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(url, headers=headers) as resp:
+                        body = await resp.text()
+                        return resp.status, body[:500]
+            except Exception as exc:
+                return 0, f"{type(exc).__name__}: {exc}"
+
+        if not self.enabled:
+            return {"AI": "❌ AI_ENABLED выключен или ключи не загружены"}
+
+        if self.openai_api_key:
+            status, _ = await get_status(
+                "OpenAI",
+                f"https://api.openai.com/v1/models/{self.model}",
+                {"Authorization": f"Bearer {self.openai_api_key}"},
+            )
+            results["OpenAI"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+
+        if self.groq_api_key:
+            status, body = await get_status(
+                "Groq",
+                "https://api.groq.com/openai/v1/models",
+                {
+                    "Authorization": f"Bearer {self.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if status == 200:
+                model_ok = self.groq_model in body
+                results["Groq"] = "✅ работает" if model_ok else f"⚠️ ключ работает, модель {self.groq_model} не найдена"
+            else:
+                results["Groq"] = f"❌ HTTP {status or 'ошибка'}"
+
+        if self.gemini_api_key:
+            status, _ = await get_status(
+                "Gemini",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}",
+                {"x-goog-api-key": self.gemini_api_key},
+            )
+            results["Gemini"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+
+        if self.openrouter_api_key:
+            status, _ = await get_status(
+                "OpenRouter",
+                "https://openrouter.ai/api/v1/key",
+                {"Authorization": f"Bearer {self.openrouter_api_key}"},
+            )
+            results["OpenRouter"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+
+        if not results:
+            results["AI"] = "❌ ни один ключ не загружен"
+        return results
+
     @staticmethod
     def mention(user: dict[str, Any]) -> str:
         display = (user.get("display_name") or "").strip()
