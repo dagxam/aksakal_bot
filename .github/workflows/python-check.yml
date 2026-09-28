@@ -31,11 +31,9 @@ jobs:
           assert not missing, f"Missing generator parameters: {missing}"
           import asyncio
           g = PhraseGenerator(
-              "", "", False,
-              openrouter_models="qwen/qwen3.8-27b:free,deepseek/deepseek-chat-v3-0324:free,openrouter/free",
-              groq_model="qwen/qwen3.8-27b",
-              gemini_api_key="",
-              gemini_model="gemini-3.5-flash-lite",
+              enabled=False,
+              groq_api_key="",
+              groq_models="openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b",
           )
           assert "AI НЕ НАСТРОЕН" in g.provider_status()
 
@@ -251,7 +249,7 @@ jobs:
           print("instant/attack smoke test OK")
           PY
 
-      - name: Command cleanup and Gemini wiring smoke test
+      - name: Command cleanup and free AI wiring smoke test
         run: |
           python - <<'PY'
           import inspect
@@ -259,20 +257,30 @@ jobs:
           from generator import PhraseGenerator
 
           sig = inspect.signature(PhraseGenerator.__init__)
-          assert "gemini_api_key" in sig.parameters
-          assert "gemini_model" in sig.parameters
+          assert "groq_models" in sig.parameters
+          assert "mistral_api_key" in sig.parameters
+          assert "mistral_model" in sig.parameters
+          assert "gemini_api_key" not in sig.parameters
+          assert "openrouter_api_key" not in sig.parameters
           assert hasattr(TelegramAPI, "delete")
           assert hasattr(AksakalBot, "send_command_notice")
           assert hasattr(AksakalBot, "safe_delete_message")
 
           g = PhraseGenerator(
-              "", "", True,
-              gemini_api_key="test",
-              gemini_model="gemini-3.5-flash-lite",
+              enabled=True,
+              groq_api_key="test",
+              groq_models="openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b",
+              mistral_api_key="test",
+              mistral_model="mistral-small-latest",
           )
           status = g.provider_status()
-          assert "Gemini/gemini-3.5-flash-lite" in status
-          print("command cleanup/Gemini wiring smoke test OK")
+          assert "openai/gpt-oss-120b" in status
+          assert "qwen/qwen3.8-27b" in status
+          assert "openai/gpt-oss-20b" in status
+          assert "Mistral/mistral-small-latest" in status
+          assert "Gemini" not in status
+          assert "OpenRouter" not in status
+          print("command cleanup/free AI wiring smoke test OK")
           PY
 
       - name: Environment diagnostics smoke test
@@ -302,7 +310,7 @@ jobs:
           assert inspect.iscoroutinefunction(PhraseGenerator.health_check)
           assert inspect.iscoroutinefunction(AksakalBot.ai_health_text)
 
-          g = PhraseGenerator("", "", True)
+          g = PhraseGenerator(enabled=True)
           import asyncio
           result = asyncio.run(g.health_check())
           assert "AI" in result
