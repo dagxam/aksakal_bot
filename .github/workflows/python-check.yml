@@ -135,7 +135,10 @@ jobs:
               assert "set:hard:normal" in callbacks
               assert "set:hard:angry" in callbacks
               assert "set:hard:super" in callbacks
+              assert "set:time:0" in callbacks
               assert "set:time:3" in callbacks
+              assert "set:silence:15" in callbacks
+              assert "set:silence:180" in callbacks
               print("database/bot smoke test OK")
           finally:
               for suffix in ("", "-shm", "-wal"):
@@ -212,4 +215,36 @@ jobs:
           assert AksakalBot.reply_feedback_score("что за бред, не смешно") == -1
           assert AksakalBot.reply_feedback_score("а почему так?") == 1
           print("feedback scoring smoke test OK")
+          PY
+
+      - name: Instant reply and attack detection smoke test
+        run: |
+          python - <<'PY'
+          from bot import AksakalBot
+
+          assert AksakalBot.looks_like_attack("Мозгов нет да у тебя")
+          assert AksakalBot.looks_like_attack("Ты что, тупой?")
+          assert not AksakalBot.looks_like_attack("Как у тебя дела?")
+
+          chat = {
+              "hardness_mode": "auto",
+              "fixed_hardness": 3,
+              "response_delay_seconds": 0,
+              "silence_minutes": 30,
+              "enabled": 1,
+          }
+          kb = AksakalBot.settings_keyboard(chat)
+          callbacks = [
+              button["callback_data"]
+              for row in kb["inline_keyboard"]
+              for button in row
+          ]
+          assert "set:time:0" in callbacks
+          assert "set:silence:30" in callbacks
+          assert "✅ ⚡ Сразу" in [
+              button["text"]
+              for row in kb["inline_keyboard"]
+              for button in row
+          ]
+          print("instant/attack smoke test OK")
           PY
