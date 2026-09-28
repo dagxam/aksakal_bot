@@ -111,6 +111,33 @@ class AksakalBot:
             return 2
         return 1
 
+    @staticmethod
+    def looks_like_attack(text: str) -> bool:
+        import re
+        low = " ".join((text or "").lower().replace("ё", "е").split())
+        if not low:
+            return False
+        patterns = (
+            r"\bмозг\w*\s+нет\b",
+            r"\bтуп\w*\b",
+            r"\bидиот\w*\b",
+            r"\bдурак\w*\b",
+            r"\bдебил\w*\b",
+            r"\bбезмозг\w*\b",
+            r"\bклоун\w*\b",
+            r"\bлох\w*\b",
+            r"\bзаткни\w*\b",
+            r"\bбред\s+нес\w*\b",
+            r"\bбесполез\w*\b",
+            r"\bслаб\w*\b",
+            r"\bпош[её]л\w*\b",
+            r"\bнах\w*\b",
+            r"\bсука\b",
+            r"\bбля\w*\b",
+            r"\bмраз\w*\b",
+        )
+        return any(re.search(p, low) for p in patterns)
+
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
         import re
@@ -829,6 +856,20 @@ class AksakalBot:
             is_sticker = bool(msg.get("sticker"))
             source_kind = "sticker" if is_sticker else "message"
 
+            reply = msg.get("reply_to_message") or {}
+            reply_message_id = int(reply.get("message_id", 0) or 0)
+            reply_from = reply.get("from") or {}
+            low_source = source_text.lower()
+            addressed_by_name = "аксакал" in low_source or (
+                self.bot_username and f"@{self.bot_username}" in low_source
+            )
+            direct_to_bot = bool(
+                (reply_message_id and self.db.get_bot_response(chat_id, reply_message_id))
+                or (self.bot_user_id and int(reply_from.get("id", 0) or 0) == self.bot_user_id)
+                or addressed_by_name
+            )
+            direct_attack = direct_to_bot and self.looks_like_attack(source_text)
+
             if is_sticker:
                 source_text = (msg.get("sticker") or {}).get("emoji") or "стикер"
                 reason = (
@@ -838,7 +879,15 @@ class AksakalBot:
             else:
                 feedback = self.detect_address_feedback(source_text)
                 greeting = self.detect_greeting_style(source_text)
-                if feedback:
+                if direct_attack:
+                    mood = "stern"
+                    source_kind = "direct_attack"
+                    reason = (
+                        "человек прямо наехал на Аксакала. Ответь ему обратно умно, жёстко и по его конкретным словам. "
+                        "Не становись воспитателем и не проси просто «сбавить тон». Если грубость лёгкая — колко поддень; "
+                        "если сильная — можешь ответить грубее и с матом. Реальными угрозами не отвечай."
+                    )
+                elif feedback:
                     mood = "playful"
                     source_kind = "profile_correction"
                     reason = (
