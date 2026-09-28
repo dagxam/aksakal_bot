@@ -106,6 +106,11 @@ class AksakalBot:
             f"не загружены: {missing}"
         )
 
+
+    async def ai_health_text(self) -> str:
+        checks = await self.generator.health_check()
+        return "\n".join(f"{name}: {status}" for name, status in checks.items())
+
     @staticmethod
     def reaction_feedback_score(reactions: list[str]) -> int:
         positive = {"😂", "🤣", "🔥", "❤️", "❤", "👍", "👏", "💯", "😁", "😆", "🥰", "🤝"}
@@ -502,11 +507,14 @@ class AksakalBot:
                     "он поддерживает разговор, отвечает на вопросы, запоминает контекст, шутит и оживляет тишину.",
                 )
             elif command == "/test" and self.tg:
+                health = await self.ai_health_text()
                 await self.tg.send(
                     chat["id"],
                     "Аксакал работает.\n"
                     f"AI: {self.generator.provider_status()}\n\n"
-                    f"{self.ai_diagnostics()}",
+                    f"{self.ai_diagnostics()}\n\n"
+                    "Проверка API:\n"
+                    f"{health}",
                 )
             return
 
@@ -761,12 +769,15 @@ class AksakalBot:
             return
 
         if cmd == "/test":
+            health = await self.ai_health_text()
             await self.send_command_notice(
                 chat_id,
                 "Аксакал жив.\n"
                 f"AI: {self.generator.provider_status()}\n"
-                f"{self.ai_diagnostics()}",
-                ttl=20,
+                f"{self.ai_diagnostics()}\n\n"
+                "Проверка API:\n"
+                f"{health}",
+                ttl=30,
             )
             return
 
