@@ -445,27 +445,41 @@ class AksakalBot:
         chat = upd.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
             return
+
         old_status = (upd.get("old_chat_member") or {}).get("status")
         new_status = (upd.get("new_chat_member") or {}).get("status")
-        if old_status in {"left", "kicked"} and new_status in {"member", "administrator"}:
-            chat_id = int(chat["id"])
-            self.db.ensure_chat(
-                chat_id,
-                chat.get("title"),
-                config.default_roast_level,
-                config.min_bot_interval_minutes,
-                config.silence_trigger_minutes,
-            )
-            current = self.db.get_chat(chat_id) or {}
-            ai_line = self.generator.provider_status()
+        chat_id = int(chat["id"])
+
+        if new_status not in {"member", "administrator"}:
+            return
+
+        self.db.ensure_chat(
+            chat_id,
+            chat.get("title"),
+            config.default_roast_level,
+            config.min_bot_interval_minutes,
+            config.silence_trigger_minutes,
+        )
+
+        # Если бот только добавлен без админки — объясняем, что для полноценной работы
+        # нужно повышение. Полную панель покажем именно после активации администратором.
+        if old_status in {"left", "kicked"} and new_status == "member":
             await self.tg.send(
                 chat_id,
-                "Аксакал активирован.\n"
-                f"AI: {ai_line}\n\n"
-                "Эта панель заменяет меню команд в группе. Выбери режим, скорость ответа "
-                "и через сколько тишины начинать тормошить чат.\n\n"
-                "Важно: дай боту права администратора на удаление сообщений и реакции; "
-                "Privacy Mode у @BotFather должен быть Disable.",
+                "Аксакал добавлен, но ещё не полностью активирован. Сделай меня администратором "
+                "с правом удаления сообщений и оставь Privacy Mode = Disable. "
+                "После повышения я покажу панель настроек.",
+            )
+            return
+
+        # Срабатывает и при добавлении сразу администратором, и при member → administrator.
+        if new_status == "administrator" and old_status != "administrator":
+            current = self.db.get_chat(chat_id) or {}
+            await self.tg.send(
+                chat_id,
+                "Аксакал полностью активирован.\n"
+                f"AI: {self.generator.provider_status()}\n\n"
+                "Выбери режим, скорость ответа и интервал самостоятельного оживления группы.",
                 reply_markup=self.settings_keyboard(current),
             )
 
