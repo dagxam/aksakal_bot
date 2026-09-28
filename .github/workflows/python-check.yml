@@ -34,6 +34,8 @@ jobs:
               "", "", False,
               openrouter_models="qwen/qwen3.8-27b:free,deepseek/deepseek-chat-v3-0324:free,openrouter/free",
               groq_model="qwen/qwen3.8-27b",
+              gemini_api_key="",
+              gemini_model="gemini-3.5-flash-lite",
           )
           assert "AI НЕ НАСТРОЕН" in g.provider_status()
 
@@ -247,4 +249,28 @@ jobs:
               for button in row
           ]
           print("instant/attack smoke test OK")
+          PY
+
+      - name: Command cleanup and Gemini wiring smoke test
+        run: |
+          python - <<'PY'
+          import inspect
+          from bot import AksakalBot, TelegramAPI
+          from generator import PhraseGenerator
+
+          sig = inspect.signature(PhraseGenerator.__init__)
+          assert "gemini_api_key" in sig.parameters
+          assert "gemini_model" in sig.parameters
+          assert hasattr(TelegramAPI, "delete")
+          assert hasattr(AksakalBot, "send_command_notice")
+          assert hasattr(AksakalBot, "safe_delete_message")
+
+          g = PhraseGenerator(
+              "", "", True,
+              gemini_api_key="test",
+              gemini_model="gemini-3.5-flash-lite",
+          )
+          status = g.provider_status()
+          assert "Gemini/gemini-3.5-flash-lite" in status
+          print("command cleanup/Gemini wiring smoke test OK")
           PY
