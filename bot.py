@@ -81,6 +81,8 @@ class AksakalBot:
         self.offset = 0
         self.tg: TelegramAPI | None = None
         self.pending_reply_tasks: dict[int, asyncio.Task] = {}
+        self.bot_user_id: int = 0
+        self.bot_username: str = ""
 
     @staticmethod
     def reaction_feedback_score(reactions: list[str]) -> int:
@@ -212,6 +214,8 @@ class AksakalBot:
             await tg.call("deleteWebhook", drop_pending_updates=False)
 
             me = await tg.call("getMe")
+            self.bot_user_id = int(me.get("id", 0) or 0)
+            self.bot_username = (me.get("username") or "").lower()
             try:
                 await self.configure_bot_profile()
             except Exception as e:
@@ -498,14 +502,21 @@ class AksakalBot:
                     {"text": mark("🔥 Супер злой", mode == "fixed" and fixed >= 5), "callback_data": "set:hard:super"},
                 ],
                 [
+                    {"text": mark("⚡ Сразу", delay == 0), "callback_data": "set:time:0"},
                     {"text": mark("3 сек", delay == 3), "callback_data": "set:time:3"},
                     {"text": mark("5 сек", delay == 5), "callback_data": "set:time:5"},
                     {"text": mark("20 сек", delay == 20), "callback_data": "set:time:20"},
-                    {"text": mark("40 сек", delay == 40), "callback_data": "set:time:40"},
                 ],
                 [
+                    {"text": mark("40 сек", delay == 40), "callback_data": "set:time:40"},
                     {"text": mark("1 мин", delay == 60), "callback_data": "set:time:60"},
                     {"text": mark("3 мин", delay == 180), "callback_data": "set:time:180"},
+                ],
+                [
+                    {"text": "💬 Тишина 15м", "callback_data": "set:silence:15"},
+                    {"text": "💬 30м", "callback_data": "set:silence:30"},
+                    {"text": "💬 1ч", "callback_data": "set:silence:60"},
+                    {"text": "💬 3ч", "callback_data": "set:silence:180"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
@@ -524,14 +535,16 @@ class AksakalBot:
             else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
         )
         delay = int(chat.get("response_delay_seconds", 20))
-        delay_label = {3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        silence = int(chat.get("silence_minutes", 180))
         return (
             "⚙️ Настройки Аксакала\n"
             f"Режим: {hardness}\n"
-            f"Таймер тишины: {delay_label}\n"
+            f"Ответ после сообщения: {delay_label}\n"
+            f"Оживление группы после тишины: {silence} мин\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
-            "Можно нажать кнопку или написать: /hardness normal, /hardness angry, /hardness super, /hardness auto, /time 3"
+            "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
         )
 
     async def show_settings(self, chat_id: int):
@@ -568,8 +581,10 @@ class AksakalBot:
             elif value in {"normal", "angry", "super"}:
                 mapped = {"normal": 1, "angry": 3, "super": 5}[value]
                 self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=mapped)
-        elif section == "time" and value in {"3", "5", "20", "40", "60", "180"}:
+        elif section == "time" and value in {"0", "3", "5", "20", "40", "60", "180"}:
             self.db.update_chat(chat_id, response_delay_seconds=int(value))
+        elif section == "silence" and value in {"15", "30", "60", "180"}:
+            self.db.update_chat(chat_id, silence_minutes=int(value))
         elif section == "bot":
             self.db.update_chat(chat_id, enabled=1 if value == "on" else 0)
 
@@ -599,7 +614,7 @@ class AksakalBot:
                 "/good — ответом на реплику Аксакала: удачный ответ\n"
                 "/bad — ответом на реплику Аксакала: неудачный ответ\n"
                 "/test — проверить бота\n\n"
-                "Быстро вручную: /hardness auto|normal|angry|super и /time 3|5|20|40|60|180",
+                "Быстро вручную: /hardness auto|normal|angry|super, /time 0|3|5|20|40|60|180, /silence 15|30|60|180",
             )
             return
 
@@ -714,10 +729,10 @@ class AksakalBot:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /time 3 | 5 | 20 | 40 | 60 | 180")
+                    await self.tg.send(chat_id, "Использование: /time 0 | 3 | 5 | 20 | 40 | 60 | 180")
                     return
-                if n not in {3, 5, 20, 40, 60, 180}:
-                    await self.tg.send(chat_id, "Выбери: 3, 5, 20, 40, 60 или 180 секунд.")
+                if n not in {0, 3, 5, 20, 40, 60, 180}:
+                    await self.tg.send(chat_id, "Выбери: 0, 3, 5, 20, 40, 60 или 180 секунд.")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
                 await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
@@ -726,18 +741,18 @@ class AksakalBot:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Теперь используй /time 3|5|20|40|60|180")
+                    await self.tg.send(chat_id, "Теперь используй /time 0|3|5|20|40|60|180")
                     return
-                if n not in {3, 5, 20, 40, 60, 180}:
+                if n not in {0, 3, 5, 20, 40, 60, 180}:
                     await self.tg.send(chat_id, "Теперь используй /time 3|5|20|40|60|180")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
                 await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
             elif cmd == "/silence":
                 try:
-                    n = max(30, min(1440, int(arg)))
+                    n = max(15, min(1440, int(arg)))
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /silence количество_минут (30–1440)")
+                    await self.tg.send(chat_id, "Использование: /silence количество_минут (15–1440)")
                     return
                 self.db.update_chat(chat_id, silence_minutes=n)
                 await self.tg.send(chat_id, f"Начну тормошить чат после {n} мин тишины.")
@@ -792,8 +807,11 @@ class AksakalBot:
         try:
             chat = self.db.get_chat(chat_id) or {}
             delay = int(chat.get("response_delay_seconds", 20))
-            delay = delay if delay in {3, 5, 20, 40, 60, 180} else 20
-            await asyncio.sleep(delay)
+            delay = delay if delay in {0, 3, 5, 20, 40, 60, 180} else 20
+            if delay > 0:
+                await asyncio.sleep(delay)
+            else:
+                await asyncio.sleep(0)
 
             # Если за время ожидания пришло новое сообщение, старая задача уже отменена.
             chat = self.db.get_chat(chat_id)
@@ -886,6 +904,7 @@ class AksakalBot:
         source_text: str | None = None,
         source_kind: str = "message",
         ignore_cooldown: bool = False,
+        forced_level: int | None = None,
     ):
         assert self.tg
         chat = self.db.get_chat(chat_id)
@@ -896,7 +915,9 @@ class AksakalBot:
         if not target:
             return
         context = self.db.recent_context(chat_id, config.context_message_limit)
-        if chat.get("hardness_mode", "auto") == "fixed":
+        if forced_level in {1, 3, 5}:
+            auto_level = int(forced_level)
+        elif chat.get("hardness_mode", "auto") == "fixed":
             fixed = int(chat.get("fixed_hardness", 3))
             auto_level = 1 if fixed <= 2 else 3 if fixed <= 4 else 5
         else:
@@ -981,23 +1002,33 @@ class AksakalBot:
             threshold = int(chat["silence_minutes"]) * 60
             if silence_age < threshold or bot_age < threshold:
                 continue
-            users = self.db.active_users(int(chat["chat_id"]), 14 * 86400)
-            candidates = [
-                u for u in users
-                if now - int(u["last_roasted_at"] or 0) > 6 * 3600
-            ]
-            if not candidates:
+            users = self.db.active_users(int(chat["chat_id"]), 30 * 86400)
+            if not users:
                 continue
-            # При тишине выбираем любого знакомого участника, а не обязательно самого молчаливого.
-            target = random.choice(candidates[: min(12, len(candidates))])
+
+            # Предпочитаем тех, кого не трогали последний час. Если таких нет —
+            # всё равно выбираем кого-то: тишина больше не должна зависать на 6 часов.
+            fresh_candidates = [
+                u for u in users
+                if now - int(u["last_roasted_at"] or 0) > 3600
+            ]
+            candidates = fresh_candidates or users
+            target = random.choice(candidates[: min(20, len(candidates))])
+
+            silence_level = None
+            if chat.get("hardness_mode", "auto") == "auto":
+                silence_level = random.choices([1, 3, 5], weights=[30, 50, 20], k=1)[0]
+
             await self.roast(
                 int(chat["chat_id"]),
                 int(target["user_id"]),
-                "в группе давно тишина. Зацепи выбранного человека короткой смешной фразой и попробуй "
-                "вызвать остальных на разговор. Можно спросить, куда все пропали, или подколоть выбранного "
-                "участника так, чтобы другим захотелось ответить.",
-                source_text="группа давно молчит",
+                "в группе давно тишина. Сам выбери живой способ расшевелить компанию: можешь мягко позвать "
+                "выбранного человека, иронично зацепить его, устроить короткий жёсткий подкол или задать ему "
+                "провокационный, но безопасный вопрос. Не повторяй фразы про саму «тишину» каждый раз; придумай "
+                "конкретный повод, используя реальные привычки и память группы.",
+                source_text="нужно оживить молчащую группу",
                 source_kind="silence",
+                forced_level=silence_level,
             )
 
 
