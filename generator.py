@@ -742,126 +742,62 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
                     self.provider_cooldowns.pop(name, None)
                     return await resp.json()
 
-        async def call_openai() -> tuple[str, str]:
-            payload = {
-                "model": self.model,
-                "input": prompt,
-                "max_output_tokens": 420,
-                "reasoning": {"effort": "low"},
-            }
-            data = await post_json(
-                "OpenAI",
-                "https://api.openai.com/v1/responses",
-                self.openai_api_key,
-                payload,
-            )
-            return self._extract_text(data), str(data.get("model") or self.model)
-
         async def call_groq(
+            model_id: str,
             input_prompt: str = prompt,
             max_tokens: int = 420,
             temperature: float = 0.75,
         ) -> tuple[str, str]:
-            payload = {
-                "model": self.groq_model,
+            payload: dict[str, Any] = {
+                "model": model_id,
                 "messages": [{"role": "user", "content": input_prompt}],
                 "max_completion_tokens": max_tokens,
                 "temperature": temperature,
-                "reasoning_effort": "none",
             }
+            if model_id.startswith("openai/gpt-oss-"):
+                payload["reasoning_effort"] = "low"
+                payload["include_reasoning"] = False
+            elif model_id.startswith("qwen/"):
+                payload["reasoning_effort"] = "none"
             data = await post_json(
-                "Groq",
+                f"Groq/{model_id}",
                 "https://api.groq.com/openai/v1/chat/completions",
                 self.groq_api_key,
                 payload,
             )
             choices = data.get("choices") or []
             content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
-            return content, str(data.get("model") or self.groq_model)
+            return content, str(data.get("model") or model_id)
 
-        async def call_gemini() -> tuple[str, str]:
-            provider_name = f"Gemini/{self.gemini_model}"
-            now = time.time()
-            cooldown_until = float(self.provider_cooldowns.get(provider_name, 0.0) or 0.0)
-            if cooldown_until > now:
-                left = max(1, int(cooldown_until - now))
-                raise RuntimeError(f"{provider_name} временно на cooldown ещё {left} сек")
-
-            url = (
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{self.gemini_model}:generateContent"
-            )
-            headers = {
-                "x-goog-api-key": self.gemini_api_key,
-                "Content-Type": "application/json",
-            }
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                "generationConfig": {
-                    "temperature": 0.8,
-                    "maxOutputTokens": 420,
-                },
-            }
-            timeout = aiohttp.ClientTimeout(total=25)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(url, json=payload, headers=headers) as resp:
-                    if resp.status >= 300:
-                        body = await resp.text()
-                        if resp.status == 429:
-                            retry_after = 0
-                            try:
-                                retry_after = int(float(resp.headers.get("Retry-After", "0") or 0))
-                            except (TypeError, ValueError):
-                                retry_after = 0
-                            retry_after = max(15, min(retry_after or 60, 3600))
-                            self.provider_cooldowns[provider_name] = time.time() + retry_after
-                        raise RuntimeError(f"{provider_name} HTTP {resp.status}: {body[:700]}")
-                    self.provider_cooldowns.pop(provider_name, None)
-                    data = await resp.json()
-
-            candidates = data.get("candidates") or []
-            if not candidates:
-                return "", self.gemini_model
-            parts = ((candidates[0].get("content") or {}).get("parts") or [])
-            text_parts = [str(part.get("text") or "") for part in parts if part.get("text")]
-            return " ".join(text_parts).strip(), self.gemini_model
-
-        async def call_openrouter(
-            model_id: str,
+        async def call_mistral(
             input_prompt: str = prompt,
             max_tokens: int = 420,
-            temperature: float = 0.8,
+            temperature: float = 0.75,
         ) -> tuple[str, str]:
-            # Модели перебираются вручную: так можно переключиться не только при HTTP-ошибке,
-            # но и когда ответ формально успешный, однако слабый по качеству.
             payload = {
-                "model": model_id,
+                "model": self.mistral_model,
                 "messages": [{"role": "user", "content": input_prompt}],
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
             data = await post_json(
-                f"OpenRouter/{model_id}",
-                "https://openrouter.ai/api/v1/chat/completions",
-                self.openrouter_api_key,
+                f"Mistral/{self.mistral_model}",
+                "https://api.mistral.ai/v1/chat/completions",
+                self.mistral_api_key,
                 payload,
             )
             choices = data.get("choices") or []
             content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
-            return content, str(data.get("model") or model_id)
+            return content, str(data.get("model") or self.mistral_model)
 
         attempts: list[tuple[str, Any]] = []
-        if self.openai_api_key:
-            attempts.append(("OpenAI", call_openai))
         if self.groq_api_key:
-            attempts.append((f"Groq/{self.groq_model}", call_groq))
-        if self.gemini_api_key:
-            attempts.append((f"Gemini/{self.gemini_model}", call_gemini))
-        if self.openrouter_api_key:
-            for model_id in self.openrouter_models:
-                async def try_model(mid=model_id):
-                    return await call_openrouter(mid)
-                attempts.append((f"OpenRouter/{model_id}", try_model))
+            for model_id in self.groq_models:
+                async def try_groq(mid=model_id):
+                    return await call_groq(mid)
+                attempts.append((f"Groq/{model_id}", try_groq))
+        if self.mistral_api_key:
+            attempts.append((f"Mistral/{self.mistral_model}", call_mistral))
 
         errors: list[str] = []
         chosen = ""
