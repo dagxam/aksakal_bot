@@ -843,6 +843,7 @@ class AksakalBot:
             if cmd == "/on":
                 self.db.update_chat(chat_id, enabled=1)
                 await self.send_command_notice(chat_id, "Аксакал проснулся.")
+                await self.show_settings(chat_id)
             elif cmd == "/off":
                 self.db.update_chat(chat_id, enabled=0)
                 await self.send_command_notice(chat_id, "Аксакал пока помолчит.")
