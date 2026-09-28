@@ -18,6 +18,8 @@ class PhraseGenerator:
         openrouter_models: str = "",
         groq_api_key: str = "",
         groq_model: str = "qwen/qwen3.8-27b",
+        gemini_api_key: str = "",
+        gemini_model: str = "gemini-3.5-flash-lite",
     ):
         self.openai_api_key = api_key
         self.model = model
@@ -32,7 +34,9 @@ class PhraseGenerator:
             self.openrouter_models = ["openrouter/free"]
         self.groq_api_key = groq_api_key
         self.groq_model = groq_model
-        self.enabled = enabled and bool(api_key or openrouter_api_key or groq_api_key)
+        self.gemini_api_key = gemini_api_key
+        self.gemini_model = gemini_model
+        self.enabled = enabled and bool(api_key or openrouter_api_key or groq_api_key or gemini_api_key)
         self.last_provider = ""
         self.last_error = ""
         self.provider_cooldowns: dict[str, float] = {}
@@ -43,6 +47,8 @@ class PhraseGenerator:
             providers.append("OpenAI")
         if self.groq_api_key:
             providers.append(f"Groq/{self.groq_model}")
+        if self.gemini_api_key:
+            providers.append(f"Gemini/{self.gemini_model}")
         if self.openrouter_api_key:
             providers.append("OpenRouter[" + " → ".join(self.openrouter_models) + "]")
         if not providers:
@@ -709,6 +715,53 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
             content = ((choices[0].get("message") or {}).get("content") or "") if choices else ""
             return content, str(data.get("model") or self.groq_model)
 
+        async def call_gemini() -> tuple[str, str]:
+            provider_name = f"Gemini/{self.gemini_model}"
+            now = time.time()
+            cooldown_until = float(self.provider_cooldowns.get(provider_name, 0.0) or 0.0)
+            if cooldown_until > now:
+                left = max(1, int(cooldown_until - now))
+                raise RuntimeError(f"{provider_name} временно на cooldown ещё {left} сек")
+
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{self.gemini_model}:generateContent"
+            )
+            headers = {
+                "x-goog-api-key": self.gemini_api_key,
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "temperature": 0.8,
+                    "maxOutputTokens": 420,
+                },
+            }
+            timeout = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload, headers=headers) as resp:
+                    if resp.status >= 300:
+                        body = await resp.text()
+                        if resp.status == 429:
+                            retry_after = 0
+                            try:
+                                retry_after = int(float(resp.headers.get("Retry-After", "0") or 0))
+                            except (TypeError, ValueError):
+                                retry_after = 0
+                            retry_after = max(15, min(retry_after or 60, 3600))
+                            self.provider_cooldowns[provider_name] = time.time() + retry_after
+                        raise RuntimeError(f"{provider_name} HTTP {resp.status}: {body[:700]}")
+                    self.provider_cooldowns.pop(provider_name, None)
+                    data = await resp.json()
+
+            candidates = data.get("candidates") or []
+            if not candidates:
+                return "", self.gemini_model
+            parts = ((candidates[0].get("content") or {}).get("parts") or [])
+            text_parts = [str(part.get("text") or "") for part in parts if part.get("text")]
+            return " ".join(text_parts).strip(), self.gemini_model
+
         async def call_openrouter(
             model_id: str,
             input_prompt: str = prompt,
@@ -738,6 +791,8 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
             attempts.append(("OpenAI", call_openai))
         if self.groq_api_key:
             attempts.append((f"Groq/{self.groq_model}", call_groq))
+        if self.gemini_api_key:
+            attempts.append((f"Gemini/{self.gemini_model}", call_gemini))
         if self.openrouter_api_key:
             for model_id in self.openrouter_models:
                 async def try_model(mid=model_id):
