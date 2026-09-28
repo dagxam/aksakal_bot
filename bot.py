@@ -515,6 +515,7 @@ class AksakalBot:
         mode = chat.get("hardness_mode", "auto")
         fixed = int(chat.get("fixed_hardness", 3))
         delay = int(chat.get("response_delay_seconds", 20))
+        silence = int(chat.get("silence_minutes", 180))
         enabled = bool(chat.get("enabled", 1))
 
         def mark(label: str, active: bool) -> str:
@@ -540,10 +541,10 @@ class AksakalBot:
                     {"text": mark("3 мин", delay == 180), "callback_data": "set:time:180"},
                 ],
                 [
-                    {"text": "💬 Тишина 15м", "callback_data": "set:silence:15"},
-                    {"text": "💬 30м", "callback_data": "set:silence:30"},
-                    {"text": "💬 1ч", "callback_data": "set:silence:60"},
-                    {"text": "💬 3ч", "callback_data": "set:silence:180"},
+                    {"text": mark("💬 15м", silence == 15), "callback_data": "set:silence:15"},
+                    {"text": mark("💬 30м", silence == 30), "callback_data": "set:silence:30"},
+                    {"text": mark("💬 1ч", silence == 60), "callback_data": "set:silence:60"},
+                    {"text": mark("💬 3ч", silence == 180), "callback_data": "set:silence:180"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
