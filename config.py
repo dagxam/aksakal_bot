@@ -3,16 +3,25 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from dotenv import load_dotenv
+from dotenv import load_dotenv, dotenv_values
 
 # Стабильно загружаем .env независимо от того, из какой рабочей папки запущен bot.py.
 _SCRIPT_ENV = Path(__file__).resolve().with_name(".env")
 _CWD_ENV = Path.cwd() / ".env"
 
-if _SCRIPT_ENV.exists():
-    load_dotenv(_SCRIPT_ENV, override=False)
-if _CWD_ENV != _SCRIPT_ENV and _CWD_ENV.exists():
-    load_dotenv(_CWD_ENV, override=False)
+def _load_env_file(path: Path):
+    if not path.exists():
+        return
+    # Сначала обычная загрузка: непустые переменные процесса/панели имеют приоритет.
+    load_dotenv(path, override=False)
+    # Но пустая переменная окружения не должна блокировать реальное значение из .env.
+    for key, value in dotenv_values(path).items():
+        if value is not None and not (os.getenv(key) or "").strip():
+            os.environ[key] = value
+
+_load_env_file(_SCRIPT_ENV)
+if _CWD_ENV != _SCRIPT_ENV:
+    _load_env_file(_CWD_ENV)
 
 
 def _bool(name: str, default: bool) -> bool:
