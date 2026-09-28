@@ -72,16 +72,11 @@ class AksakalBot:
             raise SystemExit("TELEGRAM_BOT_TOKEN не задан. Скопируйте .env.example в .env")
         self.db = Database(config.database_path)
         self.generator = PhraseGenerator(
-            config.openai_api_key,
-            config.openai_model,
-            config.ai_enabled,
-            openrouter_api_key=config.openrouter_api_key,
-            openrouter_model=config.openrouter_model,
-            openrouter_models=config.openrouter_models,
+            enabled=config.ai_enabled,
             groq_api_key=config.groq_api_key,
-            groq_model=config.groq_model,
-            gemini_api_key=config.gemini_api_key,
-            gemini_model=config.gemini_model,
+            groq_models=config.groq_models,
+            mistral_api_key=config.mistral_api_key,
+            mistral_model=config.mistral_model,
         )
         self.offset = 0
         self.tg: TelegramAPI | None = None
@@ -91,10 +86,8 @@ class AksakalBot:
 
     def ai_diagnostics(self) -> str:
         providers = [
-            ("OpenAI", bool(config.openai_api_key)),
             ("Groq", bool(config.groq_api_key)),
-            ("Gemini", bool(config.gemini_api_key)),
-            ("OpenRouter", bool(config.openrouter_api_key)),
+            ("Mistral", bool(config.mistral_api_key)),
         ]
         loaded = ", ".join(name for name, ok in providers if ok) or "нет"
         missing = ", ".join(name for name, ok in providers if not ok) or "нет"
