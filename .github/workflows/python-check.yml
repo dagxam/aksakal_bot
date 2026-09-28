@@ -291,3 +291,21 @@ jobs:
           assert "загружены ключи:" in text
           print("environment diagnostics smoke test OK")
           PY
+
+      - name: Live health-check wiring smoke test
+        run: |
+          python - <<'PY'
+          import inspect
+          from bot import AksakalBot
+          from generator import PhraseGenerator
+
+          assert inspect.iscoroutinefunction(PhraseGenerator.health_check)
+          assert inspect.iscoroutinefunction(AksakalBot.ai_health_text)
+
+          g = PhraseGenerator("", "", True)
+          import asyncio
+          result = asyncio.run(g.health_check())
+          assert "AI" in result
+          assert "ключи" in result["AI"] or "AI_ENABLED" in result["AI"]
+          print("live health-check wiring smoke test OK")
+          PY
