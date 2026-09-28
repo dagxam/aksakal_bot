@@ -240,6 +240,7 @@ class PhraseGenerator:
             return ""
 
         profile = target.get("style_profile", "neutral")
+        target_display = self.mention(target)
         transcript = []
         recent_context = context[-30:]
         by_message_id = {
@@ -409,7 +410,8 @@ class PhraseGenerator:
 Напиши ОДНУ естественную короткую реплику на русском языке.
 
 ФОРМАТ:
-- НЕ начинай ответ с имени, username или обращения к автору сообщения. Telegram сам показывает, кому ты отвечаешь.
+- В обычном Reply НЕ начинай ответ с имени, username или обращения к автору сообщения: Telegram сам показывает, кому ты отвечаешь.
+- Исключение: если тип события silence, отдельного Reply нет. Тогда можно естественно назвать выбранного участника по имени, чтобы группе было понятно, кого ты зацепил.
 - Для обычной реплики чаще достаточно 1–2 естественных предложений.
 - Для реального вопроса можно дать 2–6 предложений, если это нужно, чтобы действительно ответить.
 - Не пиши списки без необходимости; если вопрос требует шагов или перечисления, короткий список допустим.
@@ -442,6 +444,7 @@ class PhraseGenerator:
 - Используй максимум одно такое обращение в реплике и только если оно звучит естественно.
 - Никогда не используй обращения, которые этот человек уже запретил: {avoided_text}.
 Тип события: {source_kind}.
+Выбранный участник для этого события: {target_display}
 Правило события: {source_rule}
 
 ТОЧНОЕ СООБЩЕНИЕ, НА КОТОРОЕ ТЫ ОБЯЗАН ОТВЕТИТЬ:
@@ -578,9 +581,10 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
 
             target_name = self.mention(target)
             target_name_norm = normalize(target_name)
-            if target_name_norm and re.match(
-                rf"^{re.escape(target_name_norm)}(?:\s|—|-|:|,)",
-                answer_body,
+            if (
+                source_kind != "silence"
+                and target_name_norm
+                and re.match(rf"^{re.escape(target_name_norm)}(?:\s|—|-|:|,)", answer_body)
             ):
                 return "", "модель лишний раз начала ответ с имени пользователя"
 
