@@ -274,3 +274,20 @@ jobs:
           assert "Gemini/gemini-3.5-flash-lite" in status
           print("command cleanup/Gemini wiring smoke test OK")
           PY
+
+      - name: Environment diagnostics smoke test
+        run: |
+          python - <<'PY'
+          from config import config
+          from bot import AksakalBot
+
+          assert hasattr(config, "env_file_path")
+          assert hasattr(config, "env_file_exists")
+          assert hasattr(AksakalBot, "ai_diagnostics")
+          bot = object.__new__(AksakalBot)
+          text = AksakalBot.ai_diagnostics(bot)
+          assert "AI_ENABLED:" in text
+          assert ".env найден:" in text
+          assert "загружены ключи:" in text
+          print("environment diagnostics smoke test OK")
+          PY
