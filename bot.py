@@ -817,7 +817,7 @@ class AksakalBot:
         """Сбрасывает таймер на каждом новом сообщении и оценивает только последнее после паузы."""
         chat = self.db.get_chat(chat_id)
         if not chat or not chat["enabled"]:
-            return
+            return False
 
         sender = msg.get("from", {})
         if not int(sender.get("id", 0) or 0):
@@ -926,7 +926,7 @@ class AksakalBot:
                         "Не используй случайную универсальную фразу."
                     )
 
-            await self.roast(
+            sent_ok = await self.roast(
                 chat_id,
                 sender_id,
                 reason,
@@ -935,6 +935,20 @@ class AksakalBot:
                 source_text=source_text,
                 source_kind=source_kind,
             )
+
+            # Кратковременный сбой/лимит AI не должен навсегда съедать реплику.
+            # Делаем только одну повторную попытку; новое сообщение отменит эту задачу.
+            if not sent_ok and self.generator.enabled:
+                await asyncio.sleep(15)
+                await self.roast(
+                    chat_id,
+                    sender_id,
+                    reason + " Это повторная попытка после временной ошибки AI; сформулируй свежо и без повторов.",
+                    mood=mood,
+                    reply_to_message_id=msg.get("message_id"),
+                    source_text=source_text,
+                    source_kind=source_kind,
+                )
         except asyncio.CancelledError:
             return
         except Exception as e:
@@ -963,7 +977,7 @@ class AksakalBot:
         users = self.db.active_users(chat_id, 30 * 86400)
         target = next((u for u in users if u["user_id"] == target_user_id), None)
         if not target:
-            return
+            return False
         context = self.db.recent_context(chat_id, config.context_message_limit)
         if forced_level in {1, 3, 5}:
             auto_level = int(forced_level)
@@ -1010,7 +1024,7 @@ class AksakalBot:
         )
         if not text or not text.strip():
             print(f"AI skipped reply in chat {chat_id}: {self.generator.last_error or 'empty response'}")
-            return
+            return False
         sent = await self.tg.send(chat_id, text, reply_to_message_id=reply_to_message_id)
         if isinstance(sent, dict) and sent.get("message_id"):
             self.db.add_bot_message(
@@ -1031,6 +1045,7 @@ class AksakalBot:
         now = int(time.time())
         self.db.update_chat(chat_id, last_bot_message_at=now)
         self.db.mark_roasted(chat_id, target_user_id)
+        return True
 
     async def silence_worker(self):
         while True:
