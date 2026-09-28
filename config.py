@@ -36,22 +36,13 @@ class Config:
     env_file_path: str = str(_SCRIPT_ENV)
     env_file_exists: bool = _SCRIPT_ENV.exists() or _CWD_ENV.exists()
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-    openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
-    openrouter_model: str = os.getenv("OPENROUTER_MODEL", "openrouter/free")
-    openrouter_models: str = os.getenv(
-        "OPENROUTER_MODELS",
-        "qwen/qwen3.8-27b:free,"
-        "deepseek/deepseek-chat-v3-0324:free,"
-        "qwen/qwen3-235b-a22b-2507:free,"
-        "deepseek/deepseek-r1-0528-qwen3-8b:free,"
-        "openrouter/free",
-    )
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    groq_models: str = os.getenv(
+        "GROQ_MODELS",
+        "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b",
+    )
+    mistral_api_key: str = os.getenv("MISTRAL_API_KEY", "")
+    mistral_model: str = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
     database_path: str = os.getenv("DATABASE_PATH", "aksakal.db")
     default_roast_level: int = int(os.getenv("DEFAULT_ROAST_LEVEL", "3"))
     min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "10"))
