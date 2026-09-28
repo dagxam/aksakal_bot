@@ -31,6 +31,8 @@ class Config:
     )
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     groq_model: str = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     database_path: str = os.getenv("DATABASE_PATH", "aksakal.db")
     default_roast_level: int = int(os.getenv("DEFAULT_ROAST_LEVEL", "3"))
     min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "10"))
