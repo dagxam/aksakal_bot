@@ -62,60 +62,100 @@ class PhraseGenerator:
 
 
     async def health_check(self) -> dict[str, str]:
-        """Проверяет ключи и доступность API без генерации длинных ответов."""
+        """Делает минимальный реальный inference-запрос каждому настроенному провайдеру."""
         results: dict[str, str] = {}
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=20)
 
-        async def get_status(name: str, url: str, headers: dict[str, str]) -> tuple[int, str]:
+        async def post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> tuple[int, dict[str, Any] | str]:
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url, headers=headers) as resp:
-                        body = await resp.text()
-                        return resp.status, body[:500]
+                    async with session.post(url, headers=headers, json=payload) as resp:
+                        try:
+                            data: dict[str, Any] | str = await resp.json()
+                        except Exception:
+                            data = (await resp.text())[:800]
+                        return resp.status, data
             except Exception as exc:
                 return 0, f"{type(exc).__name__}: {exc}"
+
+        def failure(status: int, data: dict[str, Any] | str) -> str:
+            if isinstance(data, dict):
+                err = data.get("error")
+                if isinstance(err, dict):
+                    detail = str(err.get("message") or err.get("status") or "")
+                else:
+                    detail = str(err or data.get("message") or "")
+            else:
+                detail = str(data)
+            detail = " ".join(detail.split())[:180]
+            return f"❌ HTTP {status or 'ошибка'}" + (f": {detail}" if detail else "")
 
         if not self.enabled:
             return {"AI": "❌ AI_ENABLED выключен или ключи не загружены"}
 
+        prompt = "Ответь одним словом: работает"
+
         if self.openai_api_key:
-            status, _ = await get_status(
-                "OpenAI",
-                f"https://api.openai.com/v1/models/{self.model}",
-                {"Authorization": f"Bearer {self.openai_api_key}"},
+            status, data = await post_json(
+                "https://api.openai.com/v1/responses",
+                {
+                    "Authorization": f"Bearer {self.openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                {
+                    "model": self.model,
+                    "input": prompt,
+                    "max_output_tokens": 16,
+                },
             )
-            results["OpenAI"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+            results["OpenAI"] = "✅ работает" if status == 200 else failure(status, data)
 
         if self.groq_api_key:
-            status, body = await get_status(
-                "Groq",
-                "https://api.groq.com/openai/v1/models",
+            status, data = await post_json(
+                "https://api.groq.com/openai/v1/chat/completions",
                 {
                     "Authorization": f"Bearer {self.groq_api_key}",
                     "Content-Type": "application/json",
                 },
+                {
+                    "model": self.groq_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_completion_tokens": 16,
+                    "reasoning_effort": "none",
+                },
             )
-            if status == 200:
-                model_ok = self.groq_model in body
-                results["Groq"] = "✅ работает" if model_ok else f"⚠️ ключ работает, модель {self.groq_model} не найдена"
-            else:
-                results["Groq"] = f"❌ HTTP {status or 'ошибка'}"
+            results["Groq"] = "✅ работает" if status == 200 else failure(status, data)
 
         if self.gemini_api_key:
-            status, _ = await get_status(
-                "Gemini",
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}",
-                {"x-goog-api-key": self.gemini_api_key},
+            status, data = await post_json(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent",
+                {
+                    "x-goog-api-key": self.gemini_api_key,
+                    "Content-Type": "application/json",
+                },
+                {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
+                },
             )
-            results["Gemini"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+            results["Gemini"] = "✅ работает" if status == 200 else failure(status, data)
 
         if self.openrouter_api_key:
-            status, _ = await get_status(
-                "OpenRouter",
-                "https://openrouter.ai/api/v1/key",
-                {"Authorization": f"Bearer {self.openrouter_api_key}"},
+            model_id = self.openrouter_models[0] if self.openrouter_models else self.openrouter_model
+            status, data = await post_json(
+                "https://openrouter.ai/api/v1/chat/completions",
+                {
+                    "Authorization": f"Bearer {self.openrouter_api_key}",
+                    "Content-Type": "application/json",
+                },
+                {
+                    "model": model_id,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 16,
+                    "temperature": 0,
+                },
             )
-            results["OpenRouter"] = "✅ работает" if status == 200 else f"❌ HTTP {status or 'ошибка'}"
+            results["OpenRouter"] = "✅ работает" if status == 200 else failure(status, data)
 
         if not results:
             results["AI"] = "❌ ни один ключ не загружен"
