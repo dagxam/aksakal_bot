@@ -826,10 +826,15 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
                 print("All AI attempts failed:", " | ".join(errors))
             return ""
 
-        # Второй AI выступает редактором качества. Используем Groq, когда он настроен:
-        # это не блокирует основной ответ, если редактор недоступен или сам написал ерунду.
+        # Qwen проверяет черновик от GPT-OSS/Mistral. Если основной ответ уже от Qwen,
+        # второй запрос не нужен.
         editor_used = False
-        if self.groq_api_key and not chosen_provider.startswith("Groq"):
+        editor_model_id = (
+            "qwen/qwen3.8-27b"
+            if "qwen/qwen3.8-27b" in self.groq_models
+            else (self.groq_models[0] if self.groq_models else "")
+        )
+        if self.groq_api_key and editor_model_id and chosen_provider != f"Groq/{editor_model_id}":
             review_prompt = f"""
 Ты — строгий редактор одной Telegram-реплики. Ничего не объясняй.
 
@@ -859,7 +864,12 @@ Reply-цепочка:
 Не добавляй новые факты, которых нет в черновике/контексте.
 """.strip()
             try:
-                edited_raw, editor_model = await call_groq(review_prompt, max_tokens=260, temperature=0.25)
+                edited_raw, editor_model = await call_groq(
+                    editor_model_id,
+                    review_prompt,
+                    max_tokens=260,
+                    temperature=0.25,
+                )
                 if edited_raw.strip().upper() != "OK":
                     edited, edit_error = validate_candidate(edited_raw)
                     if edited:
@@ -872,7 +882,9 @@ Reply-цепочка:
             except Exception as exc:
                 print(f"AI editor error: {exc}")
 
-        self.last_provider = f"{chosen_provider} → {chosen_model}" + (" + Groq-editor" if editor_used else "")
+        self.last_provider = f"{chosen_provider} → {chosen_model}" + (
+            f" + editor/{editor_model_id}" if editor_used else ""
+        )
         self.last_error = ""
         return chosen
 
