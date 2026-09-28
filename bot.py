@@ -54,6 +54,9 @@ class TelegramAPI:
             payload["reply_markup"] = reply_markup
         return await self.call("editMessageText", **payload)
 
+    async def delete(self, chat_id: int, message_id: int):
+        return await self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+
 
 class AksakalBot:
     STOP_WORDS = {
@@ -77,6 +80,8 @@ class AksakalBot:
             openrouter_models=config.openrouter_models,
             groq_api_key=config.groq_api_key,
             groq_model=config.groq_model,
+            gemini_api_key=config.gemini_api_key,
+            gemini_model=config.gemini_model,
         )
         self.offset = 0
         self.tg: TelegramAPI | None = None
@@ -234,6 +239,41 @@ class AksakalBot:
         return None
 
 
+    async def safe_delete_message(self, chat_id: int, message_id: int):
+        if not self.tg or not message_id:
+            return
+        try:
+            await self.tg.delete(chat_id, message_id)
+        except Exception as exc:
+            # В группе удаление пользовательской команды требует права delete_messages.
+            print(f"delete message skipped {chat_id}/{message_id}: {exc}")
+
+    async def delete_later(self, chat_id: int, message_id: int, delay: int = 12):
+        try:
+            await asyncio.sleep(max(1, delay))
+            await self.safe_delete_message(chat_id, message_id)
+        except asyncio.CancelledError:
+            return
+
+    async def send_command_notice(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+        reply_markup: dict[str, Any] | None = None,
+        ttl: int = 12,
+    ):
+        assert self.tg
+        sent = await self.tg.send(
+            chat_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+            reply_markup=reply_markup,
+        )
+        if isinstance(sent, dict) and sent.get("message_id"):
+            asyncio.create_task(self.delete_later(chat_id, int(sent["message_id"]), ttl))
+        return sent
+
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
@@ -259,14 +299,10 @@ class AksakalBot:
         """Синхронизирует профиль только при реальном изменении и никогда не роняет запуск."""
         assert self.tg
 
-        commands = [
+        private_commands = [
             {"command": "start", "description": "Как работает Аксакал"},
-            {"command": "settings", "description": "Настройки кнопками"},
-            {"command": "status", "description": "Текущие настройки"},
-            {"command": "roast", "description": "Подколоть ответом на сообщение"},
-            {"command": "good", "description": "Отметить хороший ответ Аксакала"},
-            {"command": "bad", "description": "Отметить плохой ответ Аксакала"},
-            {"command": "test", "description": "Проверить бота"},
+            {"command": "help", "description": "Что умеет бот"},
+            {"command": "test", "description": "Проверить, что бот работает"},
         ]
 
         async def safe_sync(label: str, get_method: str, set_method: str, desired: Any, **payload):
@@ -298,16 +334,32 @@ class AksakalBot:
                 # polling и вся логика бота должны продолжить работу.
                 print(f"bot profile sync skipped ({label}): {e}")
 
-        # Команды тоже меняем только когда список реально отличается.
+        # Командное меню показываем только в личке. В группах оно специально пустое,
+        # чтобы служебные команды не торчали рядом с обычным разговором.
         try:
-            current_commands = await self.tg.call("getMyCommands")
-            normalized_current = [
+            private_scope = {"type": "all_private_chats"}
+            group_scope = {"type": "all_group_chats"}
+            default_scope = {"type": "default"}
+
+            current_private = await self.tg.call("getMyCommands", scope=private_scope)
+            normalized_private = [
                 {"command": x.get("command", ""), "description": x.get("description", "")}
-                for x in (current_commands or [])
+                for x in (current_private or [])
             ]
-            if normalized_current != commands:
-                await self.tg.call("setMyCommands", commands=commands)
-                print("bot profile synced: commands")
+            if normalized_private != private_commands:
+                await self.tg.call("setMyCommands", commands=private_commands, scope=private_scope)
+                print("bot profile synced: private commands")
+
+            current_group = await self.tg.call("getMyCommands", scope=group_scope)
+            if current_group:
+                await self.tg.call("deleteMyCommands", scope=group_scope)
+                print("bot profile synced: group commands hidden")
+
+            # Убираем старое глобальное меню, которое могло остаться от прошлой версии.
+            current_default = await self.tg.call("getMyCommands", scope=default_scope)
+            if current_default:
+                await self.tg.call("deleteMyCommands", scope=default_scope)
+                print("bot profile synced: old default commands removed")
         except Exception as e:
             print(f"bot profile sync skipped (commands): {e}")
 
@@ -390,19 +442,23 @@ class AksakalBot:
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
-            text = msg.get("text", "")
-            if text.startswith("/start") and self.tg:
+            text = (msg.get("text") or "").strip()
+            command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+            if command == "/start" and self.tg:
                 await self.tg.send(
                     chat["id"],
-                    "Добавь меня в группу, назначь администратором и отключи Privacy Mode: "
-                    "@BotFather → /setprivacy → выбери бота → Disable. "
-                    "После этого в группе напиши /test.",
+                    "Я Аксакал для групповых чатов. Добавь меня в группу, назначь администратором "
+                    "и отключи Privacy Mode: @BotFather → /setprivacy → Disable. "
+                    "В группе настройки доступны через /settings.",
                 )
-            elif text.startswith("/help") and self.tg:
+            elif command == "/help" and self.tg:
                 await self.tg.send(
                     chat["id"],
-                    "Основное: /settings — настройки кнопками, /status — состояние, /test — проверка.",
+                    "В личке доступны /start, /help и /test. Основная работа Аксакала идёт внутри группы: "
+                    "он поддерживает разговор, отвечает на вопросы, запоминает контекст, шутит и оживляет тишину.",
                 )
+            elif command == "/test" and self.tg:
+                await self.tg.send(chat["id"], f"Аксакал работает. AI: {self.generator.provider_status()}")
             return
 
         chat_id = int(chat["id"])
@@ -467,6 +523,8 @@ class AksakalBot:
             if old_task and not old_task.done():
                 old_task.cancel()
             await self.handle_command(msg, text)
+            # После выполнения убираем саму slash-команду из группы.
+            await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
             return
 
         await self.maybe_emotional_response(chat_id, msg)
@@ -633,7 +691,7 @@ class AksakalBot:
         arg = rest[0].strip() if rest else ""
 
         if cmd in {"/help", "/start"}:
-            await self.tg.send(
+            await self.send_command_notice(
                 chat_id,
                 "Команды Аксакала:\n"
                 "/settings — выбрать режим и время кнопками\n"
@@ -648,18 +706,18 @@ class AksakalBot:
 
         if cmd in {"/settings", "/aksakal"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.tg.send(chat_id, "Настройки может менять администратор группы.")
+                await self.send_command_notice(chat_id, "Настройки может менять администратор группы.")
                 return
             await self.show_settings(chat_id)
             return
 
         if cmd == "/test":
-            await self.tg.send(chat_id, "Аксакал жив. Всё вижу, всё запоминаю. Теперь говорите осторожнее 😏")
+            await self.send_command_notice(chat_id, "Аксакал жив. Всё вижу, всё запоминаю. Теперь говорите осторожнее 😏")
             return
 
         if cmd in {"/status", "/aksakal"}:
             c = self.db.get_chat(chat_id) or {}
-            await self.tg.send(
+            await self.send_command_notice(
                 chat_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {self.generator.provider_status()}\n"
@@ -674,14 +732,14 @@ class AksakalBot:
 
         if cmd in {"/good", "/bad"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.tg.send(chat_id, "Обучать Аксакала вручную может только администратор группы.")
+                await self.send_command_notice(chat_id, "Обучать Аксакала вручную может только администратор группы.")
                 return
 
             reply = msg.get("reply_to_message") or {}
             reply_message_id = int(reply.get("message_id", 0) or 0)
             response_meta = self.db.get_bot_response(chat_id, reply_message_id) if reply_message_id else None
             if not response_meta:
-                await self.tg.send(
+                await self.send_command_notice(
                     chat_id,
                     "Ответь /good или /bad именно на AI-реплику Аксакала, которую хочешь оценить.",
                 )
@@ -699,13 +757,13 @@ class AksakalBot:
             )
             style = response_meta.get("humor_style") or "none"
             if cmd == "/good":
-                await self.tg.send(
+                await self.send_command_notice(
                     chat_id,
                     f"Запомнил: такой ответ удачный. Стиль «{style}» получил сильный плюс.",
                     reply_to_message_id=reply_message_id,
                 )
             else:
-                await self.tg.send(
+                await self.send_command_notice(
                     chat_id,
                     f"Запомнил: так отвечать хуже. Стиль «{style}» получил сильный минус.",
                     reply_to_message_id=reply_message_id,
@@ -717,22 +775,22 @@ class AksakalBot:
             aliases = {"male": "male", "м": "male", "муж": "male", "female": "female", "ж": "female", "жен": "female", "neutral": "neutral", "нейтр": "neutral"}
             profile = aliases.get(value)
             if not profile:
-                await self.tg.send(chat_id, "Использование: /profile male | female | neutral")
+                await self.send_command_notice(chat_id, "Использование: /profile male | female | neutral")
                 return
             self.db.set_profile(chat_id, user_id, profile)
-            await self.tg.send(chat_id, "Профиль стиля сохранён.")
+            await self.send_command_notice(chat_id, "Профиль стиля сохранён.")
             return
 
         if cmd in {"/on", "/off", "/hardness", "/h", "/time", "/t", "/frequency", "/silence"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.tg.send(chat_id, "Эту настройку может менять администратор группы.")
+                await self.send_command_notice(chat_id, "Эту настройку может менять администратор группы.")
                 return
             if cmd == "/on":
                 self.db.update_chat(chat_id, enabled=1)
-                await self.tg.send(chat_id, "Аксакал проснулся.")
+                await self.send_command_notice(chat_id, "Аксакал проснулся.")
             elif cmd == "/off":
                 self.db.update_chat(chat_id, enabled=0)
-                await self.tg.send(chat_id, "Аксакал пока помолчит.")
+                await self.send_command_notice(chat_id, "Аксакал пока помолчит.")
             elif cmd in {"/hardness", "/h"}:
                 value = arg.lower()
                 aliases = {
@@ -744,46 +802,46 @@ class AksakalBot:
                 selected = aliases.get(value)
                 if selected == "auto":
                     self.db.update_chat(chat_id, hardness_mode="auto")
-                    await self.tg.send(chat_id, "Режим: AUTO. Аксакал сам выбирает Нормальный, Злой или Супер злой по разговору.")
+                    await self.send_command_notice(chat_id, "Режим: AUTO. Аксакал сам выбирает Нормальный, Злой или Супер злой по разговору.")
                 elif selected in {"normal", "angry", "super"}:
                     mapped = {"normal": 1, "angry": 3, "super": 5}[selected]
                     label = {"normal": "Нормальный", "angry": "Злой", "super": "Супер злой"}[selected]
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=mapped)
-                    await self.tg.send(chat_id, f"Режим зафиксирован: {label}")
+                    await self.send_command_notice(chat_id, f"Режим зафиксирован: {label}")
                 else:
-                    await self.tg.send(chat_id, "Использование: /hardness auto | normal | angry | super")
+                    await self.send_command_notice(chat_id, "Использование: /hardness auto | normal | angry | super")
                     return
             elif cmd in {"/time", "/t"}:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /time 0 | 3 | 5 | 20 | 40 | 60 | 180")
+                    await self.send_command_notice(chat_id, "Использование: /time 0 | 3 | 5 | 20 | 40 | 60 | 180")
                     return
                 if n not in {0, 3, 5, 20, 40, 60, 180}:
-                    await self.tg.send(chat_id, "Выбери: 0, 3, 5, 20, 40, 60 или 180 секунд.")
+                    await self.send_command_notice(chat_id, "Выбери: 0, 3, 5, 20, 40, 60 или 180 секунд.")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
-                await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
+                await self.send_command_notice(chat_id, f"Задержка ответа: {n} сек.")
             elif cmd == "/frequency":
                 # Старый скрытый алиас: значения трактуем как секунды только из нового набора.
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.tg.send(chat_id, "Теперь используй /time 0|3|5|20|40|60|180")
+                    await self.send_command_notice(chat_id, "Теперь используй /time 0|3|5|20|40|60|180")
                     return
                 if n not in {0, 3, 5, 20, 40, 60, 180}:
-                    await self.tg.send(chat_id, "Теперь используй /time 3|5|20|40|60|180")
+                    await self.send_command_notice(chat_id, "Теперь используй /time 3|5|20|40|60|180")
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
-                await self.tg.send(chat_id, f"Задержка ответа: {n} сек.")
+                await self.send_command_notice(chat_id, f"Задержка ответа: {n} сек.")
             elif cmd == "/silence":
                 try:
                     n = max(15, min(1440, int(arg)))
                 except ValueError:
-                    await self.tg.send(chat_id, "Использование: /silence количество_минут (15–1440)")
+                    await self.send_command_notice(chat_id, "Использование: /silence количество_минут (15–1440)")
                     return
                 self.db.update_chat(chat_id, silence_minutes=n)
-                await self.tg.send(chat_id, f"Начну тормошить чат после {n} мин тишины.")
+                await self.send_command_notice(chat_id, f"Начну тормошить чат после {n} мин тишины.")
             return
 
         if cmd == "/roast":
@@ -803,7 +861,7 @@ class AksakalBot:
                     source_kind=reply_kind,
                 )
             else:
-                await self.tg.send(chat_id, "Ответь командой /roast на сообщение человека.")
+                await self.send_command_notice(chat_id, "Ответь командой /roast на сообщение человека.")
 
     async def is_admin(self, chat_id: int, user_id: int) -> bool:
         assert self.tg
