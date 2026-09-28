@@ -9,48 +9,35 @@ import aiohttp
 class PhraseGenerator:
     def __init__(
         self,
-        api_key: str,
-        model: str,
         enabled: bool = True,
         *,
-        openrouter_api_key: str = "",
-        openrouter_model: str = "openrouter/free",
-        openrouter_models: str = "",
         groq_api_key: str = "",
-        groq_model: str = "qwen/qwen3.8-27b",
-        gemini_api_key: str = "",
-        gemini_model: str = "gemini-3.5-flash-lite",
+        groq_models: str = "openai/gpt-oss-120b,qwen/qwen3.8-27b,openai/gpt-oss-20b",
+        mistral_api_key: str = "",
+        mistral_model: str = "mistral-small-latest",
     ):
-        self.openai_api_key = api_key
-        self.model = model
-        self.openrouter_api_key = openrouter_api_key
-        self.openrouter_model = openrouter_model
-        self.openrouter_models = [
-            x.strip()
-            for x in (openrouter_models or openrouter_model or "openrouter/free").split(",")
-            if x.strip()
-        ]
-        if not self.openrouter_models:
-            self.openrouter_models = ["openrouter/free"]
         self.groq_api_key = groq_api_key
-        self.groq_model = groq_model
-        self.gemini_api_key = gemini_api_key
-        self.gemini_model = gemini_model
-        self.enabled = enabled and bool(api_key or openrouter_api_key or groq_api_key or gemini_api_key)
+        self.groq_models = [x.strip() for x in groq_models.split(",") if x.strip()]
+        if not self.groq_models:
+            self.groq_models = [
+                "openai/gpt-oss-120b",
+                "qwen/qwen3.8-27b",
+                "openai/gpt-oss-20b",
+            ]
+        self.groq_model = self.groq_models[0]
+        self.mistral_api_key = mistral_api_key
+        self.mistral_model = mistral_model
+        self.enabled = enabled and bool(groq_api_key or mistral_api_key)
         self.last_provider = ""
         self.last_error = ""
         self.provider_cooldowns: dict[str, float] = {}
 
     def provider_status(self) -> str:
         providers = []
-        if self.openai_api_key:
-            providers.append("OpenAI")
         if self.groq_api_key:
-            providers.append(f"Groq/{self.groq_model}")
-        if self.gemini_api_key:
-            providers.append(f"Gemini/{self.gemini_model}")
-        if self.openrouter_api_key:
-            providers.append("OpenRouter[" + " → ".join(self.openrouter_models) + "]")
+            providers.append("Groq[" + " → ".join(self.groq_models) + "]")
+        if self.mistral_api_key:
+            providers.append(f"Mistral/{self.mistral_model}")
         if not providers:
             return "AI НЕ НАСТРОЕН — автоматические ответы отключены"
         status = " → ".join(providers)
@@ -60,9 +47,8 @@ class PhraseGenerator:
             status += f" | ошибка: {self.last_error[:120]}"
         return status
 
-
     async def health_check(self) -> dict[str, str]:
-        """Делает минимальный реальный inference-запрос каждому настроенному провайдеру."""
+        """Минимальный реальный inference-тест каждой модели рабочей цепочки."""
         results: dict[str, str] = {}
         timeout = aiohttp.ClientTimeout(total=20)
 
@@ -91,74 +77,51 @@ class PhraseGenerator:
             return f"❌ HTTP {status or 'ошибка'}" + (f": {detail}" if detail else "")
 
         if not self.enabled:
-            return {"AI": "❌ AI_ENABLED выключен или ключи не загружены"}
+            return {"AI": "❌ AI_ENABLED выключен или рабочие ключи не загружены"}
 
         prompt = "Ответь одним словом: работает"
 
-        if self.openai_api_key:
-            status, data = await post_json(
-                "https://api.openai.com/v1/responses",
-                {
-                    "Authorization": f"Bearer {self.openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                {
-                    "model": self.model,
-                    "input": prompt,
-                    "max_output_tokens": 16,
-                },
-            )
-            results["OpenAI"] = "✅ работает" if status == 200 else failure(status, data)
-
         if self.groq_api_key:
-            status, data = await post_json(
-                "https://api.groq.com/openai/v1/chat/completions",
-                {
-                    "Authorization": f"Bearer {self.groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                {
-                    "model": self.groq_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_completion_tokens": 16,
-                    "reasoning_effort": "none",
-                },
-            )
-            results["Groq"] = "✅ работает" if status == 200 else failure(status, data)
-
-        if self.gemini_api_key:
-            status, data = await post_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent",
-                {
-                    "x-goog-api-key": self.gemini_api_key,
-                    "Content-Type": "application/json",
-                },
-                {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"maxOutputTokens": 16, "temperature": 0},
-                },
-            )
-            results["Gemini"] = "✅ работает" if status == 200 else failure(status, data)
-
-        if self.openrouter_api_key:
-            model_id = self.openrouter_models[0] if self.openrouter_models else self.openrouter_model
-            status, data = await post_json(
-                "https://openrouter.ai/api/v1/chat/completions",
-                {
-                    "Authorization": f"Bearer {self.openrouter_api_key}",
-                    "Content-Type": "application/json",
-                },
-                {
+            for model_id in self.groq_models:
+                payload: dict[str, Any] = {
                     "model": model_id,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 16,
-                    "temperature": 0,
+                    "max_completion_tokens": 32,
+                    "temperature": 0.2,
+                }
+                if model_id.startswith("openai/gpt-oss-"):
+                    payload["reasoning_effort"] = "low"
+                    payload["include_reasoning"] = False
+                elif model_id.startswith("qwen/"):
+                    payload["reasoning_effort"] = "none"
+                status, data = await post_json(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    {
+                        "Authorization": f"Bearer {self.groq_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    payload,
+                )
+                results[f"Groq/{model_id}"] = "✅ работает" if status == 200 else failure(status, data)
+
+        if self.mistral_api_key:
+            status, data = await post_json(
+                "https://api.mistral.ai/v1/chat/completions",
+                {
+                    "Authorization": f"Bearer {self.mistral_api_key}",
+                    "Content-Type": "application/json",
+                },
+                {
+                    "model": self.mistral_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 32,
+                    "temperature": 0.2,
                 },
             )
-            results["OpenRouter"] = "✅ работает" if status == 200 else failure(status, data)
+            results[f"Mistral/{self.mistral_model}"] = "✅ работает" if status == 200 else failure(status, data)
 
         if not results:
-            results["AI"] = "❌ ни один ключ не загружен"
+            results["AI"] = "❌ ни один рабочий ключ не загружен"
         return results
 
     @staticmethod
