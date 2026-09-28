@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+# Стабильно загружаем .env независимо от того, из какой рабочей папки запущен bot.py.
+_SCRIPT_ENV = Path(__file__).resolve().with_name(".env")
+_CWD_ENV = Path.cwd() / ".env"
+
+if _SCRIPT_ENV.exists():
+    load_dotenv(_SCRIPT_ENV, override=False)
+if _CWD_ENV != _SCRIPT_ENV and _CWD_ENV.exists():
+    load_dotenv(_CWD_ENV, override=False)
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -16,6 +24,8 @@ def _bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Config:
+    env_file_path: str = str(_SCRIPT_ENV)
+    env_file_exists: bool = _SCRIPT_ENV.exists() or _CWD_ENV.exists()
     telegram_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
     openai_model: str = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
