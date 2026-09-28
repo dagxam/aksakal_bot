@@ -89,6 +89,23 @@ class AksakalBot:
         self.bot_user_id: int = 0
         self.bot_username: str = ""
 
+    def ai_diagnostics(self) -> str:
+        providers = [
+            ("OpenAI", bool(config.openai_api_key)),
+            ("Groq", bool(config.groq_api_key)),
+            ("Gemini", bool(config.gemini_api_key)),
+            ("OpenRouter", bool(config.openrouter_api_key)),
+        ]
+        loaded = ", ".join(name for name, ok in providers if ok) or "нет"
+        missing = ", ".join(name for name, ok in providers if not ok) or "нет"
+        return (
+            f"AI_ENABLED: {'да' if config.ai_enabled else 'НЕТ'}\n"
+            f".env найден: {'да' if config.env_file_exists else 'НЕТ'}\n"
+            f"ожидаемый .env: {config.env_file_path}\n"
+            f"загружены ключи: {loaded}\n"
+            f"не загружены: {missing}"
+        )
+
     @staticmethod
     def reaction_feedback_score(reactions: list[str]) -> int:
         positive = {"😂", "🤣", "🔥", "❤️", "❤", "👍", "👏", "💯", "😁", "😆", "🥰", "🤝"}
@@ -289,6 +306,7 @@ class AksakalBot:
                 # Настройка имени/описания/команд не должна мешать работе самого бота.
                 print(f"bot profile sync warning: {e}")
             print(f"Аксакал запущен: @{me.get('username')}")
+            print(self.ai_diagnostics())
             worker = asyncio.create_task(self.silence_worker())
             try:
                 await self.poll()
@@ -363,6 +381,12 @@ class AksakalBot:
         except Exception as e:
             print(f"bot profile sync skipped (commands): {e}")
 
+        try:
+            await self.tg.call("setChatMenuButton", menu_button={"type": "commands"})
+            print("bot profile synced: private menu button")
+        except Exception as e:
+            print(f"bot profile sync skipped (menu button): {e}")
+
         await safe_sync(
             "name",
             "getMyName",
@@ -432,11 +456,17 @@ class AksakalBot:
                 config.min_bot_interval_minutes,
                 config.silence_trigger_minutes,
             )
+            current = self.db.get_chat(chat_id) or {}
+            ai_line = self.generator.provider_status()
             await self.tg.send(
                 chat_id,
-                "Аксакал на месте. Для проверки напиши /test. "
-                "Чтобы я видел обычные сообщения и реакции, сделай меня администратором "
-                "и отключи Privacy Mode через @BotFather → /setprivacy → Disable.",
+                "Аксакал активирован.\n"
+                f"AI: {ai_line}\n\n"
+                "Эта панель заменяет меню команд в группе. Выбери режим, скорость ответа "
+                "и через сколько тишины начинать тормошить чат.\n\n"
+                "Важно: дай боту права администратора на удаление сообщений и реакции; "
+                "Privacy Mode у @BotFather должен быть Disable.",
+                reply_markup=self.settings_keyboard(current),
             )
 
     async def handle_message(self, msg: dict[str, Any]):
@@ -458,7 +488,12 @@ class AksakalBot:
                     "он поддерживает разговор, отвечает на вопросы, запоминает контекст, шутит и оживляет тишину.",
                 )
             elif command == "/test" and self.tg:
-                await self.tg.send(chat["id"], f"Аксакал работает. AI: {self.generator.provider_status()}")
+                await self.tg.send(
+                    chat["id"],
+                    "Аксакал работает.\n"
+                    f"AI: {self.generator.provider_status()}\n\n"
+                    f"{self.ai_diagnostics()}",
+                )
             return
 
         chat_id = int(chat["id"])
@@ -712,7 +747,13 @@ class AksakalBot:
             return
 
         if cmd == "/test":
-            await self.send_command_notice(chat_id, "Аксакал жив. Всё вижу, всё запоминаю. Теперь говорите осторожнее 😏")
+            await self.send_command_notice(
+                chat_id,
+                "Аксакал жив.\n"
+                f"AI: {self.generator.provider_status()}\n"
+                f"{self.ai_diagnostics()}",
+                ttl=20,
+            )
             return
 
         if cmd in {"/status", "/aksakal"}:
