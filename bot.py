@@ -846,6 +846,10 @@ class AksakalBot:
                     "🐊 Крокодил уже идёт. Пишите варианты прямо в чат.",
                     reply_markup=self.crocodile_keyboard(),
                 )
+            else:
+                # Например, бот перезапустился между раундами: продолжаем игру,
+                # а не оставляем её в состоянии active без нового слова.
+                await self.start_crocodile_round(chat_id)
             return
         self.db.start_crocodile_game(chat_id)
         await self.tg.send(
@@ -1034,6 +1038,7 @@ class AksakalBot:
             f"Оживление группы после тишины: {silence} мин\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
+            "🐊 «Крокодил» запускается отдельной кнопкой ниже.\n"
             "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
         )
 
