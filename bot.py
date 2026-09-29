@@ -860,6 +860,10 @@ class AksakalBot:
 
     async def start_crocodile_game(self, chat_id: int):
         assert self.tg
+        city_game = self.db.get_city_game(chat_id)
+        if city_game and city_game.get("active"):
+            await self.tg.send(chat_id, "Сейчас идёт 🏙 игра в города. Сначала закончим её, потом запустим «Крокодила».")
+            return
         current = self.db.get_crocodile_game(chat_id)
         if current and current.get("active"):
             if current.get("word"):
@@ -993,6 +997,208 @@ class AksakalBot:
         attempts = self.db.register_crocodile_attempt(chat_id)
         if attempts in {5, 10}:
             await self.send_crocodile_hint(chat_id, automatic=True)
+        return True
+
+    @classmethod
+    def detect_game_request(cls, text: str) -> str | None:
+        import re
+        low = cls.normalize_crocodile_guess(text)
+        if not low:
+            return None
+        play = bool(re.search(r"\b(давай|давайте|играем|поиграем|сыграем|играть|сыграть|запусти|запускай|начни|начинаем)\b", low))
+        if play and re.search(r"\bкрокодил(?:а|е)?\b", low):
+            return "crocodile"
+        if play and (re.search(r"\bгорода\b", low) or "в города" in low):
+            return "cities"
+        if low in {"rating", "рейтинг", "игровой рейтинг", "покажи рейтинг", "покажи rating"}:
+            return "rating"
+        return None
+
+    @staticmethod
+    def city_last_letter(city: str) -> str:
+        import re
+        letters = re.sub(r"[^а-яё]", "", (city or "").lower())
+        for letter in reversed(letters):
+            if letter not in {"ь", "ъ", "ы", "й"}:
+                return letter.replace("ё", "е")
+        return ""
+
+    @classmethod
+    def city_lookup(cls) -> dict[str, str]:
+        return {
+            cls.normalize_crocodile_guess(city): city
+            for city in cls.CITY_NAMES
+        }
+
+    @staticmethod
+    def city_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [{"text": "⏹ Завершить города", "callback_data": "set:city:stop"}]
+            ]
+        }
+
+    def game_rating_text(self, chat_id: int) -> str:
+        croc = self.db.crocodile_top(chat_id, 10)
+        cities = self.db.city_top(chat_id, 10)
+        if not croc and not cities:
+            return "🏆 Игровой рейтинг пока пуст. Сначала надо кого-нибудь обыграть 😄"
+
+        def render(title: str, rows: list[dict[str, Any]]) -> str:
+            if not rows:
+                return f"{title}\n— пока без очков"
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for i, item in enumerate(rows):
+                place = medals[i] if i < 3 else f"{i + 1}."
+                lines.append(f"{place} {item['display_name']} — {item['score']}")
+            return title + "\n" + "\n".join(lines)
+
+        parts = ["🏆 ИГРОВОЙ РЕЙТИНГ"]
+        if croc:
+            parts.append(render("🐊 Крокодил", croc))
+        if cities:
+            parts.append(render("🏙 Города", cities))
+        return "\n\n".join(parts)
+
+    async def start_city_game(self, chat_id: int):
+        assert self.tg
+        croc = self.db.get_crocodile_game(chat_id)
+        if croc and croc.get("active"):
+            await self.tg.send(chat_id, "Сейчас идёт 🐊 «Крокодил». Сначала закончим его, потом сыграем в города.")
+            return
+
+        current = self.db.get_city_game(chat_id)
+        if current and current.get("active"):
+            await self.tg.send(
+                chat_id,
+                f"🏙 Города уже идут. Сейчас нужно назвать город на «{str(current.get('required_letter') or '').upper()}».",
+                reply_markup=self.city_keyboard(),
+            )
+            return
+
+        lookup = self.city_lookup()
+        cities = list(lookup.values())
+        random.shuffle(cities)
+        first = ""
+        for candidate in cities:
+            required = self.city_last_letter(candidate)
+            if any(self.normalize_crocodile_guess(x).startswith(required) for x in self.CITY_NAMES):
+                first = candidate
+                break
+        first = first or random.choice(cities)
+        required = self.city_last_letter(first)
+        self.db.start_city_game(chat_id, first, required)
+        await self.tg.send(
+            chat_id,
+            "🏙 Начинаем «Города»!\n\n"
+            "Я называю город, а любой участник отвечает городом на последнюю подходящую букву. "
+            "Повторять уже названные города нельзя. За каждый правильный ответ +1 очко.\n\n"
+            f"Я начинаю: {first}\n"
+            f"Ваш город на «{required.upper()}».",
+            reply_markup=self.city_keyboard(),
+        )
+
+    async def stop_city_game(self, chat_id: int, announce: bool = True):
+        assert self.tg
+        game = self.db.get_city_game(chat_id)
+        if not game or not game.get("active"):
+            if announce:
+                await self.send_command_notice(chat_id, "Сейчас игра в города не запущена.")
+            return
+        self.db.stop_city_game(chat_id)
+        if announce:
+            await self.tg.send(chat_id, f"🏙 Игра в города завершена.\n\n{self.game_rating_text(chat_id)}")
+
+    async def handle_city_guess(
+        self,
+        chat_id: int,
+        user_id: int,
+        display_name: str,
+        text: str,
+        kind: str,
+    ) -> bool:
+        game = self.db.get_city_game(chat_id)
+        if not game or not game.get("active"):
+            return False
+        if kind != "message" or not text.strip():
+            return True
+
+        normalized = self.normalize_crocodile_guess(text)
+        if normalized in {"стоп игра", "стоп города", "хватит играть", "закончить игру"}:
+            await self.stop_city_game(chat_id)
+            return True
+
+        lookup = self.city_lookup()
+        city = lookup.get(normalized)
+        if not city:
+            # Обычный разговор во время игры не считаем ошибкой и не засоряем чат замечаниями.
+            return True
+
+        required = str(game.get("required_letter") or "").lower()
+        city_norm = self.normalize_crocodile_guess(city)
+        if required and not city_norm.startswith(required):
+            await self.tg.send(
+                chat_id,
+                f"Не пойдёт 🙂 Сейчас нужен город на «{required.upper()}».",
+            )
+            return True
+
+        used = [
+            self.normalize_crocodile_guess(x)
+            for x in str(game.get("used_cities") or "").splitlines()
+            if x.strip()
+        ]
+        if city_norm in used:
+            await self.tg.send(chat_id, f"{city} уже называли. Давай другой город на «{required.upper()}».")
+            return True
+
+        used.append(city_norm)
+        total = self.db.add_city_score(chat_id, user_id, display_name, 1)
+        bot_letter = self.city_last_letter(city)
+        candidates = [
+            candidate for candidate in self.CITY_NAMES
+            if self.normalize_crocodile_guess(candidate).startswith(bot_letter)
+            and self.normalize_crocodile_guess(candidate) not in used
+        ]
+
+        if not candidates:
+            remaining = [
+                candidate for candidate in self.CITY_NAMES
+                if self.normalize_crocodile_guess(candidate) not in used
+            ]
+            if not remaining:
+                self.db.stop_city_game(chat_id)
+                await self.tg.send(
+                    chat_id,
+                    f"🔥 {display_name}: +1 за {city}. Вы перебрали весь мой список городов!\n\n"
+                    f"{self.game_rating_text(chat_id)}",
+                )
+                return True
+            bot_city = random.choice(remaining)
+            used.append(self.normalize_crocodile_guess(bot_city))
+            next_letter = self.city_last_letter(bot_city)
+            self.db.update_city_game(chat_id, bot_city, next_letter, used)
+            await self.tg.send(
+                chat_id,
+                f"✅ {display_name}: {city} — засчитано, счёт {total}.\n"
+                f"На «{bot_letter.upper()}» у меня закончились варианты, поэтому начинаю новую цепочку.\n\n"
+                f"Я: {bot_city}\nВаш город на «{next_letter.upper()}».",
+                reply_markup=self.city_keyboard(),
+            )
+            return True
+
+        bot_city = random.choice(candidates)
+        used.append(self.normalize_crocodile_guess(bot_city))
+        next_letter = self.city_last_letter(bot_city)
+        self.db.update_city_game(chat_id, bot_city, next_letter, used)
+        await self.tg.send(
+            chat_id,
+            f"✅ {display_name}: {city} — +1, всего {total}.\n"
+            f"Я: {bot_city}\n"
+            f"Теперь ваш город на «{next_letter.upper()}».",
+            reply_markup=self.city_keyboard(),
+        )
         return True
 
     @staticmethod
