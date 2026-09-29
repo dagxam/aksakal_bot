@@ -2950,10 +2950,64 @@ class AksakalBot:
         self.db.mark_roasted(chat_id, target_user_id)
         return True
 
+    async def check_weekly_game_champions(self):
+        assert self.tg
+        now = datetime.now(timezone.utc)
+        current_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(days=now.weekday())
+        previous_start = current_start - timedelta(days=7)
+        week_key = current_start.strftime("%G-W%V")
+        since_ts = int(previous_start.timestamp())
+        until_ts = int(current_start.timestamp())
+
+        with self.db.connect() as conn:
+            chats = [dict(r) for r in conn.execute("SELECT chat_id FROM chats WHERE enabled=1").fetchall()]
+
+        for chat in chats:
+            chat_id = int(chat["chat_id"])
+            if self.db.weekly_announcement_done(chat_id, week_key):
+                continue
+            if self.active_game(chat_id):
+                # Не перебиваем текущую игру: объявим чемпиона после её завершения.
+                continue
+
+            rows = self.db.weekly_game_rating(
+                chat_id,
+                since_ts,
+                until_ts=until_ts,
+                game=None,
+                limit=10,
+            )
+            self.db.mark_weekly_announcement(chat_id, week_key)
+            if not rows:
+                continue
+
+            winner = rows[0]
+            winner_id = int(winner["user_id"])
+            winner_name = str(winner["display_name"])
+            self.db.unlock_achievement(
+                chat_id,
+                winner_id,
+                f"week_king:{previous_start.date().isoformat()}",
+                "👑 Король недели",
+            )
+
+            medals = ["🥇", "🥈", "🥉"]
+            lines = []
+            for i, item in enumerate(rows[:5]):
+                place = medals[i] if i < 3 else f"{i + 1}."
+                lines.append(f"{place} {item['display_name']} — {item['points']}")
+            await self.tg.send(
+                chat_id,
+                "📅 Итоги прошлой игровой недели\n\n"
+                + "\n".join(lines)
+                + f"\n\n👑 Король недели — {winner_name}!",
+            )
+
     async def silence_worker(self):
         while True:
             try:
                 await asyncio.sleep(60)
+                await self.check_weekly_game_champions()
                 await self.check_silent_chats()
             except asyncio.CancelledError:
                 raise
@@ -2965,9 +3019,7 @@ class AksakalBot:
         with self.db.connect() as conn:
             chats = [dict(r) for r in conn.execute("SELECT * FROM chats WHERE enabled=1").fetchall()]
         for chat in chats:
-            game = self.db.get_crocodile_game(int(chat["chat_id"]))
-            city_game = self.db.get_city_game(int(chat["chat_id"]))
-            if (game and game.get("active")) or (city_game and city_game.get("active")):
+            if self.active_game(int(chat["chat_id"])):
                 continue
             silence_age = now - int(chat["last_activity_at"])
             bot_age = now - int(chat["last_bot_message_at"])
