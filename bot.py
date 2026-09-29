@@ -761,6 +761,9 @@ class AksakalBot:
             await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
             return
 
+        if await self.handle_crocodile_guess(chat_id, user_id, display, text, kind):
+            return
+
         await self.maybe_emotional_response(chat_id, msg)
 
     async def handle_reaction(self, upd: dict[str, Any]):
@@ -948,7 +951,7 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"🎉 {display_name} угадал! Слово: {word}.\n"
-                f"Теперь у него {total} очк.\n\n"
+                f"Счёт игрока: {total}.\n\n"
                 f"{self.crocodile_score_text(chat_id)}\n\n"
                 "Следующий раунд через 3 секунды…",
             )
@@ -999,6 +1002,9 @@ class AksakalBot:
                     {"text": mark("💬 30м", silence == 30), "callback_data": "set:silence:30"},
                     {"text": mark("💬 1ч", silence == 60), "callback_data": "set:silence:60"},
                     {"text": mark("💬 3ч", silence == 180), "callback_data": "set:silence:180"},
+                ],
+                [
+                    {"text": "🐊 Играть в Крокодила", "callback_data": "set:game:croc"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
@@ -1057,6 +1063,22 @@ class AksakalBot:
             return
         section, value = parts[1], parts[2]
 
+        if section == "game" and value == "croc":
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Запускаю Крокодила")
+            await self.start_crocodile_game(chat_id)
+            return
+        if section == "croc" and value == "hint":
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Ещё подсказка")
+            await self.send_crocodile_hint(chat_id)
+            return
+        if section == "croc" and value == "stop":
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Игра завершена")
+            await self.stop_crocodile_game(chat_id)
+            return
+
         if section == "hard":
             if value == "auto":
                 self.db.update_chat(chat_id, hardness_mode="auto")
@@ -1095,7 +1117,10 @@ class AksakalBot:
                 "/roast — подколоть ответом на сообщение\n"
                 "/good — ответом на реплику Аксакала: удачный ответ\n"
                 "/bad — ответом на реплику Аксакала: неудачный ответ\n"
-                "/test — проверить бота\n\n"
+                "/test — проверить бота\n"
+                "/crocodile — начать игру «Крокодил»\n"
+                "/crocodile hint — дать подсказку\n"
+                "/crocodile stop — закончить игру\n\n"
                 "Быстро вручную: /hardness auto|normal|angry|super, /time 0|3|5|20|40|60|180, /silence 15|30|60|180",
             )
             return
@@ -1105,6 +1130,19 @@ class AksakalBot:
                 await self.send_command_notice(chat_id, "Настройки может менять администратор группы.")
                 return
             await self.show_settings(chat_id)
+            return
+
+        if cmd in {"/crocodile", "/croc", "/крокодил"}:
+            if not await self.is_admin(chat_id, user_id):
+                await self.send_command_notice(chat_id, "Запускать и останавливать игру может администратор группы.")
+                return
+            action = arg.lower().strip()
+            if action in {"stop", "стоп", "off"}:
+                await self.stop_crocodile_game(chat_id)
+            elif action in {"hint", "подсказка", "help"}:
+                await self.send_crocodile_hint(chat_id)
+            else:
+                await self.start_crocodile_game(chat_id)
             return
 
         if cmd == "/test":
@@ -1526,6 +1564,9 @@ class AksakalBot:
         with self.db.connect() as conn:
             chats = [dict(r) for r in conn.execute("SELECT * FROM chats WHERE enabled=1").fetchall()]
         for chat in chats:
+            game = self.db.get_crocodile_game(int(chat["chat_id"]))
+            if game and game.get("active"):
+                continue
             silence_age = now - int(chat["last_activity_at"])
             bot_age = now - int(chat["last_bot_message_at"])
             threshold = int(chat["silence_minutes"]) * 60
