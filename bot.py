@@ -1131,14 +1131,35 @@ class AksakalBot:
         # Игры можно запускать обычной фразой, без slash-команд.
         if kind == "message" and text:
             game_request = self.detect_game_request(text)
+            if game_request == "center":
+                await self.show_game_center(chat_id)
+                return
             if game_request == "crocodile":
                 await self.start_crocodile_game(chat_id)
                 return
             if game_request == "cities":
                 await self.start_city_game(chat_id)
                 return
+            if game_request == "hangman":
+                await self.start_hangman_game(chat_id)
+                return
+            if game_request == "quiz":
+                await self.start_quiz_game(chat_id)
+                return
+            if game_request == "whoami":
+                await self.start_whoami_game(chat_id)
+                return
             if game_request == "rating":
                 await self.tg.send(chat_id, self.game_rating_text(chat_id))
+                return
+            if game_request == "mystats":
+                await self.tg.send(chat_id, self.player_stats_text(chat_id, user_id, display))
+                return
+            if game_request == "skip":
+                if self.active_game(chat_id) == "crocodile":
+                    await self.skip_crocodile_word(chat_id)
+                else:
+                    await self.send_command_notice(chat_id, "Пропуск слова работает во время «Крокодила».")
                 return
             if game_request == "stop":
                 await self.stop_active_game(chat_id)
@@ -1149,6 +1170,12 @@ class AksakalBot:
         if await self.handle_city_guess(chat_id, user_id, display, text, kind):
             return
         if await self.handle_crocodile_guess(chat_id, user_id, display, text, kind):
+            return
+        if await self.handle_hangman_guess(chat_id, user_id, display, text, kind):
+            return
+        if await self.handle_quiz_guess(chat_id, user_id, display, text, kind):
+            return
+        if await self.handle_whoami_guess(chat_id, user_id, display, text, kind):
             return
 
         if kind == "message" and text:
