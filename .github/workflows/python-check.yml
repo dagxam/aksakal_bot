@@ -383,6 +383,115 @@ jobs:
           print("natural game/rating/cities smoke test OK")
           PY
 
+      - name: Full game system smoke test
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+          import time
+
+          from bot import AksakalBot
+          from db import Database
+
+          assert AksakalBot.detect_game_request("давай играть") == "center"
+          assert AksakalBot.detect_game_request("давай в виселицу") == "hangman"
+          assert AksakalBot.detect_game_request("давай викторину") == "quiz"
+          assert AksakalBot.detect_game_request("давай сыграем кто я") == "whoami"
+          assert AksakalBot.detect_game_request("пропусти слово") == "skip"
+          assert AksakalBot.detect_game_request("моя статистика") == "mystats"
+
+          kb = AksakalBot.game_center_keyboard()
+          callbacks = [
+              b["callback_data"]
+              for row in kb["inline_keyboard"]
+              for b in row
+          ]
+          for expected in (
+              "set:game:croc",
+              "set:game:cities",
+              "set:game:hangman",
+              "set:game:quiz",
+              "set:game:whoami",
+          ):
+              assert expected in callbacks
+
+          assert len(AksakalBot.CROCODILE_WORDS) >= 60
+          assert set(AksakalBot.CROCODILE_LEVELS) == {1, 2, 3}
+          assert len(AksakalBot.CITY_NAMES) >= 250
+          assert AksakalBot.resolve_city("махачькала") == "Махачкала"
+          assert AksakalBot.resolve_city("ростов на дону") == "Ростов-на-Дону"
+          assert AksakalBot.hangman_pattern("океан", "оа") == "О _ _ А _"
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              chat_id = -100999
+              db.ensure_chat(chat_id, "Игры", 3, 10, 180)
+
+              db.start_game_session(chat_id, "crocodile", target_score=10, reset=True)
+              for n in range(9):
+                  result = db.award_game_point(chat_id, "crocodile", 1, "Али")
+                  assert result["session_score"] == n + 1
+                  assert not result["won"]
+              result = db.award_game_point(chat_id, "crocodile", 1, "Али")
+              assert result["session_score"] == 10 and result["won"]
+              final = db.register_game_session_win(chat_id, "crocodile", 1, "Али")
+              assert final["wins"] == 1
+              assert final["points"] == 10
+              assert final["correct"] == 10
+              assert final["games_played"] == 1
+              assert final["best_streak"] == 10
+
+              db.start_game_session(chat_id, "cities", target_score=10, reset=True)
+              city = db.award_game_point(chat_id, "cities", 2, "Магомед")
+              assert city["session_score"] == 1
+
+              rating = db.game_rating(chat_id)
+              assert rating[0]["user_id"] == 1 and rating[0]["points"] == 10
+              croc_rating = db.game_rating(chat_id, game="crocodile")
+              assert croc_rating[0]["wins"] == 1
+
+              weekly = db.weekly_game_rating(chat_id, int(time.time()) - 3600)
+              assert weekly and weekly[0]["user_id"] == 1
+
+              db.start_crocodile_game(chat_id)
+              db.set_crocodile_round(chat_id, "арбуз")
+              state = db.get_crocodile_game(chat_id)
+              assert state["difficulty"] == 1
+              assert state["skip_used"] == 0
+              assert db.use_crocodile_skip(chat_id) is True
+              assert db.use_crocodile_skip(chat_id) is False
+              db.set_crocodile_round(chat_id, "самолёт")
+              assert db.get_crocodile_game(chat_id)["skip_used"] == 0
+              assert db.update_crocodile_difficulty(chat_id, True) == 1
+              assert db.update_crocodile_difficulty(chat_id, True) == 2
+
+              db.set_hangman_round(chat_id, "океан", "вода")
+              assert db.get_hangman_game(chat_id)["active"] == 1
+              db.update_hangman_game(chat_id, "оа", 1)
+              assert db.get_hangman_game(chat_id)["misses"] == 1
+
+              db.set_quiz_round(chat_id, "q1", "7", "Сколько?", "5\n6\n7\n8")
+              assert db.get_quiz_game(chat_id)["answer"] == "7"
+              assert db.add_quiz_attempt(chat_id) == 1
+
+              db.set_whoami_round(chat_id, "Юрий Гагарин")
+              assert db.get_whoami_game(chat_id)["answer"] == "Юрий Гагарин"
+              assert db.advance_whoami_clue(chat_id) == 1
+
+              assert db.unlock_achievement(chat_id, 1, "test", "Тест") is True
+              assert db.unlock_achievement(chat_id, 1, "test", "Тест") is False
+              assert db.player_achievements(chat_id, 1)[0]["code"] == "test"
+          finally:
+              try:
+                  os.remove(path)
+              except FileNotFoundError:
+                  pass
+
+          print("full game system smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
