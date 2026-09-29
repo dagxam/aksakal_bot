@@ -1261,8 +1261,8 @@ class AksakalBot:
         return {
             "inline_keyboard": [
                 [
-                    {"text": "🐊 Крокодил", "callback_data": "set:game:croc"},
-                    {"text": "🏙 Города", "callback_data": "set:game:cities"},
+                    {"text": "🎮 Игры", "callback_data": "set:game:center"},
+                    {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
                 ],
                 [
                     {"text": "🔤 Виселица", "callback_data": "set:game:hangman"},
@@ -2295,8 +2295,8 @@ class AksakalBot:
             f"Оживление группы после тишины: {silence} мин\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
-            "Игры 🐊 «Крокодил» и 🏙 «Города» запускаются кнопками ниже или обычной фразой в чате.\n"
-            "Фразы «покажи рейтинг» и «закончи игру» тоже понимаются без команд.\n"
+            "🎮 Игры: Крокодил, Города, Виселица, Викторина и «Кто я?».\n"
+            "Напишите «давай играть» для выбора игры. «Покажи рейтинг», «моя статистика» и «закончи игру» тоже работают обычными фразами.\n"
             "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
         )
 
@@ -2310,48 +2310,94 @@ class AksakalBot:
         data = query.get("data") or ""
         msg = query.get("message") or {}
         chat = msg.get("chat") or {}
+        sender = query.get("from") or {}
         chat_id = int(chat.get("id", 0) or 0)
-        user_id = int((query.get("from") or {}).get("id", 0) or 0)
+        user_id = int(sender.get("id", 0) or 0)
+        display_name = " ".join(
+            x for x in [sender.get("first_name"), sender.get("last_name")] if x
+        ).strip() or sender.get("username") or str(user_id)
         callback_id = query.get("id")
+
         if not chat_id or not user_id or not data.startswith("set:"):
             if callback_id:
                 await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
             return
 
-        if not await self.is_admin(chat_id, user_id):
-            if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Только администратор.", show_alert=True)
-            return
-
         parts = data.split(":")
         if len(parts) != 3:
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
             return
         section, value = parts[1], parts[2]
 
-        if section == "game" and value == "croc":
+        # Игровые кнопки доступны всем участникам группы.
+        if section in {"game", "croc", "city", "hang", "quiz", "who"}:
             if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Запускаю Крокодила")
-            await self.start_crocodile_game(chat_id)
-            return
-        if section == "game" and value == "cities":
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
+
+            if section == "game":
+                if value == "center":
+                    await self.show_game_center(chat_id)
+                elif value == "croc":
+                    await self.start_crocodile_game(chat_id)
+                elif value == "cities":
+                    await self.start_city_game(chat_id)
+                elif value == "hangman":
+                    await self.start_hangman_game(chat_id)
+                elif value == "quiz":
+                    await self.start_quiz_game(chat_id)
+                elif value == "whoami":
+                    await self.start_whoami_game(chat_id)
+                elif value == "rating":
+                    await self.tg.send(chat_id, self.game_rating_text(chat_id))
+                return
+
+            if section == "croc":
+                if value == "hint":
+                    await self.send_crocodile_hint(chat_id)
+                elif value == "skip":
+                    await self.skip_crocodile_word(chat_id)
+                elif value == "stop":
+                    await self.stop_crocodile_game(chat_id)
+                return
+
+            if section == "city" and value == "stop":
+                await self.stop_city_game(chat_id)
+                return
+
+            if section == "hang" and value == "stop":
+                if self.active_game(chat_id) == "hangman":
+                    await self.stop_specific_game(chat_id, "hangman")
+                    await self.tg.send(chat_id, "🔤 Виселица закончена. Возвращаемся к обычному общению.")
+                return
+
+            if section == "quiz":
+                if value == "stop":
+                    if self.active_game(chat_id) == "quiz":
+                        await self.stop_specific_game(chat_id, "quiz")
+                        await self.tg.send(chat_id, "❓ Викторина закончена. Возвращаемся к обычному общению.")
+                elif value in {"1", "2", "3", "4"}:
+                    await self.handle_quiz_guess(chat_id, user_id, display_name, value, "message")
+                return
+
+            if section == "who":
+                if value == "hint":
+                    await self.send_whoami_hint(chat_id)
+                elif value == "stop":
+                    if self.active_game(chat_id) == "whoami":
+                        await self.stop_specific_game(chat_id, "whoami")
+                        await self.tg.send(chat_id, "🎭 «Кто я?» закончена. Возвращаемся к обычному общению.")
+                return
+
+        # Обычные настройки Аксакала меняет только администратор.
+        if not await self.is_admin(chat_id, user_id):
             if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Запускаю города")
-            await self.start_city_game(chat_id)
-            return
-        if section == "city" and value == "stop":
-            if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Игра завершена")
-            await self.stop_city_game(chat_id)
-            return
-        if section == "croc" and value == "hint":
-            if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Ещё подсказка")
-            await self.send_crocodile_hint(chat_id)
-            return
-        if section == "croc" and value == "stop":
-            if callback_id:
-                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Игра завершена")
-            await self.stop_crocodile_game(chat_id)
+                await self.tg.call(
+                    "answerCallbackQuery",
+                    callback_query_id=callback_id,
+                    text="Только администратор.",
+                    show_alert=True,
+                )
             return
 
         if section == "hard":
@@ -2371,7 +2417,12 @@ class AksakalBot:
             await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Сохранено")
         fresh = self.db.get_chat(chat_id) or {}
         try:
-            await self.tg.edit(chat_id, int(msg.get("message_id", 0)), self.settings_text(fresh), self.settings_keyboard(fresh))
+            await self.tg.edit(
+                chat_id,
+                int(msg.get("message_id", 0)),
+                self.settings_text(fresh),
+                self.settings_keyboard(fresh),
+            )
         except Exception:
             await self.show_settings(chat_id)
 
