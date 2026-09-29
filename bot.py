@@ -786,6 +786,9 @@ class AksakalBot:
             if game_request == "rating":
                 await self.tg.send(chat_id, self.game_rating_text(chat_id))
                 return
+            if game_request == "stop":
+                await self.stop_active_game(chat_id)
+                return
 
         # Во время игр ответы не попадают в обучаемый словарь Аксакала
         # и не запускают его обычные автоответы.
@@ -1020,12 +1023,23 @@ class AksakalBot:
         low = cls.normalize_crocodile_guess(text)
         if not low:
             return None
+
+        if low in {
+            "закончи игру", "закончить игру", "заканчивай игру",
+            "останови игру", "остановить игру", "стоп игра", "стоп игру",
+            "хватит играть", "закрой игру",
+        }:
+            return "stop"
+
         play = bool(re.search(r"\b(давай|давайте|играем|поиграем|сыграем|играть|сыграть|запусти|запускай|начни|начинаем)\b", low))
         if play and re.search(r"\bкрокодил(?:а|е)?\b", low):
             return "crocodile"
         if play and (re.search(r"\bгорода\b", low) or "в города" in low):
             return "cities"
-        if low in {"rating", "рейтинг", "игровой рейтинг", "покажи рейтинг", "покажи rating"}:
+        if low in {
+            "rating", "рейтинг", "игровой рейтинг",
+            "покажи рейтинг", "покажи rating", "показать рейтинг",
+        }:
             return "rating"
         return None
 
@@ -1075,6 +1089,27 @@ class AksakalBot:
         if cities:
             parts.append(render("🏙 Города", cities))
         return "\n\n".join(parts)
+
+    async def stop_active_game(self, chat_id: int):
+        assert self.tg
+        croc = self.db.get_crocodile_game(chat_id)
+        cities = self.db.get_city_game(chat_id)
+
+        stopped = False
+        if croc and croc.get("active"):
+            await self.stop_crocodile_game(chat_id, announce=False)
+            stopped = True
+        if cities and cities.get("active"):
+            await self.stop_city_game(chat_id, announce=False)
+            stopped = True
+
+        if stopped:
+            await self.tg.send(
+                chat_id,
+                "⏹ Игра закончена. Возвращаемся к обычному общению.",
+            )
+        else:
+            await self.send_command_notice(chat_id, "Сейчас активной игры нет.")
 
     async def start_city_game(self, chat_id: int):
         assert self.tg
@@ -1283,6 +1318,7 @@ class AksakalBot:
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
             "Игры 🐊 «Крокодил» и 🏙 «Города» запускаются кнопками ниже или обычной фразой в чате.\n"
+            "Фразы «покажи рейтинг» и «закончи игру» тоже понимаются без команд.\n"
             "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
         )
 
@@ -1385,7 +1421,8 @@ class AksakalBot:
                 "/cities — начать игру «Города»\n"
                 "/cities stop — закончить города\n"
                 "/rating — игровой рейтинг группы\n\n"
-                "Можно и без команд: «давай играть в крокодила» или «давайте в города».\n\n"
+                "Можно и без команд: «давай играть в крокодила», «играть в города», "
+                "«покажи рейтинг» или «закончи игру».\n\n"
                 "Быстро вручную: /hardness auto|normal|angry|super, /time 0|3|5|20|40|60|180, /silence 15|30|60|180",
             )
             return
