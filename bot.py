@@ -1261,8 +1261,8 @@ class AksakalBot:
         return {
             "inline_keyboard": [
                 [
-                    {"text": "🎮 Игры", "callback_data": "set:game:center"},
-                    {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
+                    {"text": "🐊 Крокодил", "callback_data": "set:game:croc"},
+                    {"text": "🏙 Города", "callback_data": "set:game:cities"},
                 ],
                 [
                     {"text": "🔤 Виселица", "callback_data": "set:game:hangman"},
@@ -2266,8 +2266,8 @@ class AksakalBot:
                     {"text": mark("💬 3ч", silence == 180), "callback_data": "set:silence:180"},
                 ],
                 [
-                    {"text": "🐊 Крокодил", "callback_data": "set:game:croc"},
-                    {"text": "🏙 Города", "callback_data": "set:game:cities"},
+                    {"text": "🎮 Игры", "callback_data": "set:game:center"},
+                    {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
