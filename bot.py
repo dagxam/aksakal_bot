@@ -1168,8 +1168,11 @@ class AksakalBot:
             if old_task and not old_task.done():
                 old_task.cancel()
             await self.handle_command(msg, text)
-            # После выполнения убираем саму slash-команду из группы.
-            await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
+            # Служебная slash-команда остаётся видимой несколько секунд,
+            # затем тихо удаляется из чата. Панели/игровые сообщения при этом остаются.
+            command_message_id = int(msg.get("message_id", 0) or 0)
+            if command_message_id:
+                asyncio.create_task(self.delete_later(chat_id, command_message_id, delay=6))
             return
 
         # Игры можно запускать обычной фразой, без slash-команд.
@@ -2326,7 +2329,6 @@ class AksakalBot:
         mode = chat.get("hardness_mode", "auto")
         fixed = int(chat.get("fixed_hardness", 3))
         delay = int(chat.get("response_delay_seconds", 20))
-        silence = int(chat.get("silence_minutes", 180))
         enabled = bool(chat.get("enabled", 1))
 
         def mark(label: str, active: bool) -> str:
@@ -2352,16 +2354,6 @@ class AksakalBot:
                     {"text": mark("3 мин", delay == 180), "callback_data": "set:time:180"},
                 ],
                 [
-                    {"text": mark("💬 15м", silence == 15), "callback_data": "set:silence:15"},
-                    {"text": mark("💬 30м", silence == 30), "callback_data": "set:silence:30"},
-                    {"text": mark("💬 1ч", silence == 60), "callback_data": "set:silence:60"},
-                    {"text": mark("💬 3ч", silence == 180), "callback_data": "set:silence:180"},
-                ],
-                [
-                    {"text": "🎮 Игры", "callback_data": "set:game:center"},
-                    {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
-                ],
-                [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
                     {"text": mark("🔴 Выключен", not enabled), "callback_data": "set:bot:off"},
                 ],
@@ -2378,18 +2370,21 @@ class AksakalBot:
             else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
         )
         delay = int(chat.get("response_delay_seconds", 20))
-        delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
-        silence = int(chat.get("silence_minutes", 180))
+        delay_label = {
+            0: "сразу",
+            3: "3 сек",
+            5: "5 сек",
+            20: "20 сек",
+            40: "40 сек",
+            60: "1 мин",
+            180: "3 мин",
+        }.get(delay, f"{delay} сек")
         return (
             "⚙️ Настройки Аксакала\n"
-            f"Режим: {hardness}\n"
-            f"Ответ после сообщения: {delay_label}\n"
-            f"Оживление группы после тишины: {silence} мин\n"
+            f"Жёсткость: {hardness}\n"
+            f"Время ответа: {delay_label}\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
-            "После этого времени без новых сообщений отвечаю на последнее.\n"
-            "🎮 Игры: Крокодил, Города, Виселица, Викторина и «Кто я?».\n"
-            "Напишите «давай играть» для выбора игры. «Покажи рейтинг», «моя статистика» и «закончи игру» тоже работают обычными фразами.\n"
-            "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
+            "Здесь оставлены только основные настройки: жёсткость, задержка ответа и включение/выключение."
         )
 
     async def show_settings(self, chat_id: int):
