@@ -774,8 +774,23 @@ class AksakalBot:
             await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
             return
 
-        # Во время игры варианты ответов не попадают в обучаемый словарь Аксакала
+        # Игры можно запускать обычной фразой, без slash-команд.
+        if kind == "message" and text:
+            game_request = self.detect_game_request(text)
+            if game_request == "crocodile":
+                await self.start_crocodile_game(chat_id)
+                return
+            if game_request == "cities":
+                await self.start_city_game(chat_id)
+                return
+            if game_request == "rating":
+                await self.tg.send(chat_id, self.game_rating_text(chat_id))
+                return
+
+        # Во время игр ответы не попадают в обучаемый словарь Аксакала
         # и не запускают его обычные автоответы.
+        if await self.handle_city_guess(chat_id, user_id, display, text, kind):
+            return
         if await self.handle_crocodile_guess(chat_id, user_id, display, text, kind):
             return
 
@@ -1238,7 +1253,8 @@ class AksakalBot:
                     {"text": mark("💬 3ч", silence == 180), "callback_data": "set:silence:180"},
                 ],
                 [
-                    {"text": "🐊 Играть в Крокодила", "callback_data": "set:game:croc"},
+                    {"text": "🐊 Крокодил", "callback_data": "set:game:croc"},
+                    {"text": "🏙 Города", "callback_data": "set:game:cities"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
@@ -1266,7 +1282,7 @@ class AksakalBot:
             f"Оживление группы после тишины: {silence} мин\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
             "После этого времени без новых сообщений отвечаю на последнее.\n"
-            "🐊 «Крокодил» запускается отдельной кнопкой ниже.\n"
+            "Игры 🐊 «Крокодил» и 🏙 «Города» запускаются кнопками ниже или обычной фразой в чате.\n"
             "Можно нажать кнопку или написать: /hardness auto, /time 0, /silence 30"
         )
 
@@ -1302,6 +1318,16 @@ class AksakalBot:
             if callback_id:
                 await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Запускаю Крокодила")
             await self.start_crocodile_game(chat_id)
+            return
+        if section == "game" and value == "cities":
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Запускаю города")
+            await self.start_city_game(chat_id)
+            return
+        if section == "city" and value == "stop":
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Игра завершена")
+            await self.stop_city_game(chat_id)
             return
         if section == "croc" and value == "hint":
             if callback_id:
@@ -1355,7 +1381,11 @@ class AksakalBot:
                 "/test — проверить бота\n"
                 "/crocodile — начать игру «Крокодил»\n"
                 "/crocodile hint — дать подсказку\n"
-                "/crocodile stop — закончить игру\n\n"
+                "/crocodile stop — закончить игру\n"
+                "/cities — начать игру «Города»\n"
+                "/cities stop — закончить города\n"
+                "/rating — игровой рейтинг группы\n\n"
+                "Можно и без команд: «давай играть в крокодила» или «давайте в города».\n\n"
                 "Быстро вручную: /hardness auto|normal|angry|super, /time 0|3|5|20|40|60|180, /silence 15|30|60|180",
             )
             return
@@ -1368,9 +1398,6 @@ class AksakalBot:
             return
 
         if cmd in {"/crocodile", "/croc", "/крокодил"}:
-            if not await self.is_admin(chat_id, user_id):
-                await self.send_command_notice(chat_id, "Запускать и останавливать игру может администратор группы.")
-                return
             action = arg.lower().strip()
             if action in {"stop", "стоп", "off"}:
                 await self.stop_crocodile_game(chat_id)
@@ -1378,6 +1405,18 @@ class AksakalBot:
                 await self.send_crocodile_hint(chat_id)
             else:
                 await self.start_crocodile_game(chat_id)
+            return
+
+        if cmd in {"/cities", "/city", "/города"}:
+            action = arg.lower().strip()
+            if action in {"stop", "стоп", "off"}:
+                await self.stop_city_game(chat_id)
+            else:
+                await self.start_city_game(chat_id)
+            return
+
+        if cmd in {"/rating", "/рейтинг"}:
+            await self.tg.send(chat_id, self.game_rating_text(chat_id))
             return
 
         if cmd == "/test":
@@ -1800,7 +1839,8 @@ class AksakalBot:
             chats = [dict(r) for r in conn.execute("SELECT * FROM chats WHERE enabled=1").fetchall()]
         for chat in chats:
             game = self.db.get_crocodile_game(int(chat["chat_id"]))
-            if game and game.get("active"):
+            city_game = self.db.get_city_game(int(chat["chat_id"]))
+            if (game and game.get("active")) or (city_game and city_game.get("active")):
                 continue
             silence_age = now - int(chat["last_activity_at"])
             bot_age = now - int(chat["last_bot_message_at"])
