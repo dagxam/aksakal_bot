@@ -1320,6 +1320,29 @@ class AksakalBot:
                 ],
                 [
                     {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
+                    {"text": "📊 Моя статистика", "callback_data": "set:game:mystats"},
+                ],
+            ]
+        }
+
+    @staticmethod
+    def rating_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "🏆 Вечный", "callback_data": "set:rating:all"},
+                    {"text": "📅 Неделя", "callback_data": "set:rating:week"},
+                ],
+                [
+                    {"text": "🐊 Крокодил", "callback_data": "set:rating:croc"},
+                    {"text": "🏙 Города", "callback_data": "set:rating:cities"},
+                ],
+                [
+                    {"text": "🔤 Виселица", "callback_data": "set:rating:hangman"},
+                    {"text": "❓ Викторина", "callback_data": "set:rating:quiz"},
+                ],
+                [
+                    {"text": "🎭 Кто я?", "callback_data": "set:rating:whoami"},
                 ],
             ]
         }
@@ -2400,7 +2423,7 @@ class AksakalBot:
         section, value = parts[1], parts[2]
 
         # Игровые кнопки доступны всем участникам группы.
-        if section in {"game", "croc", "city", "hang", "quiz", "who"}:
+        if section in {"game", "rating", "croc", "city", "hang", "quiz", "who"}:
             if callback_id:
                 await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
 
@@ -2418,7 +2441,40 @@ class AksakalBot:
                 elif value == "whoami":
                     await self.start_whoami_game(chat_id)
                 elif value == "rating":
-                    await self.tg.send(chat_id, self.game_rating_text(chat_id))
+                    await self.tg.send(
+                        chat_id,
+                        self.game_rating_text(chat_id),
+                        reply_markup=self.rating_keyboard(),
+                    )
+                elif value == "mystats":
+                    await self.tg.send(
+                        chat_id,
+                        self.player_stats_text(chat_id, user_id, display_name),
+                    )
+                return
+
+            if section == "rating":
+                if value == "week":
+                    await self.tg.send(
+                        chat_id,
+                        self.game_rating_text(chat_id, weekly=True),
+                        reply_markup=self.rating_keyboard(),
+                    )
+                else:
+                    aliases = {
+                        "all": None,
+                        "croc": "crocodile",
+                        "cities": "cities",
+                        "hangman": "hangman",
+                        "quiz": "quiz",
+                        "whoami": "whoami",
+                    }
+                    game = aliases.get(value)
+                    await self.tg.send(
+                        chat_id,
+                        self.game_rating_text(chat_id, game=game),
+                        reply_markup=self.rating_keyboard(),
+                    )
                 return
 
             if section == "croc":
