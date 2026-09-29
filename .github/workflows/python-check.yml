@@ -137,8 +137,19 @@ jobs:
               assert "set:hard:super" in callbacks
               assert "set:time:0" in callbacks
               assert "set:time:3" in callbacks
-              assert "set:silence:15" in callbacks
-              assert "set:silence:180" in callbacks
+              assert "set:bot:on" in callbacks
+              assert "set:bot:off" in callbacks
+
+              # В панели настроек оставлены только жёсткость, время ответа и вкл/выкл.
+              assert not any(x.startswith("set:silence:") for x in callbacks)
+              assert not any(x.startswith("set:game:") for x in callbacks)
+              assert not any(x.startswith("set:rating:") for x in callbacks)
+
+              settings_text = AksakalBot.settings_text(chat)
+              assert "Жёсткость:" in settings_text
+              assert "Время ответа:" in settings_text
+              assert "Состояние:" in settings_text
+              assert "Оживление группы" not in settings_text
               print("database/bot smoke test OK")
           finally:
               for suffix in ("", "-shm", "-wal"):
