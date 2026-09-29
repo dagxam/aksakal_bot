@@ -803,6 +803,168 @@ class AksakalBot:
             )
 
     @staticmethod
+    def normalize_crocodile_guess(text: str) -> str:
+        import re
+        low = (text or "").lower().replace("ё", "е")
+        low = re.sub(r"[^a-zа-я0-9\s-]+", " ", low)
+        return " ".join(low.split())
+
+    @staticmethod
+    def crocodile_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "💡 Подсказка", "callback_data": "set:croc:hint"},
+                    {"text": "⏹ Завершить", "callback_data": "set:croc:stop"},
+                ]
+            ]
+        }
+
+    def crocodile_score_text(self, chat_id: int) -> str:
+        top = self.db.crocodile_top(chat_id, 5)
+        if not top:
+            return "Счёт пока пуст."
+        medals = ["🥇", "🥈", "🥉", "4.", "5."]
+        rows = [
+            f"{medals[i]} {item['display_name']} — {item['score']}"
+            for i, item in enumerate(top)
+        ]
+        return "🏆 Счёт:\n" + "\n".join(rows)
+
+    async def start_crocodile_game(self, chat_id: int):
+        assert self.tg
+        current = self.db.get_crocodile_game(chat_id)
+        if current and current.get("active"):
+            if current.get("word"):
+                await self.tg.send(
+                    chat_id,
+                    "🐊 Крокодил уже идёт. Пишите варианты прямо в чат.",
+                    reply_markup=self.crocodile_keyboard(),
+                )
+            return
+        self.db.start_crocodile_game(chat_id)
+        await self.tg.send(
+            chat_id,
+            "🐊 Начинаем «Крокодила»!\n\n"
+            "Я объясняю слово, не называя его. Все участники пишут варианты прямо в чат. "
+            "Кто первым угадает — получает +1 очко. После правильного ответа я сам начинаю следующий раунд.",
+        )
+        await self.start_crocodile_round(chat_id)
+
+    async def start_crocodile_round(self, chat_id: int, delay: float = 0):
+        assert self.tg
+        if delay:
+            await asyncio.sleep(delay)
+        game = self.db.get_crocodile_game(chat_id)
+        if not game or not game.get("active"):
+            return
+
+        previous = self.normalize_crocodile_guess(str(game.get("word") or ""))
+        words = [word for word in self.CROCODILE_WORDS if self.normalize_crocodile_guess(word) != previous]
+        word = random.choice(words or list(self.CROCODILE_WORDS))
+        self.db.set_crocodile_round(chat_id, word)
+        fresh = self.db.get_crocodile_game(chat_id) or {}
+        round_number = int(fresh.get("round_number", 1) or 1)
+        clue = self.CROCODILE_WORDS[word][0]
+        sent = await self.tg.send(
+            chat_id,
+            f"🐊 КРОКОДИЛ · Раунд {round_number}\n\n"
+            f"🗣 {clue}\n\n"
+            "Пишите варианты прямо в чат. Первому угадавшему +1.",
+            reply_markup=self.crocodile_keyboard(),
+        )
+        if isinstance(sent, dict) and sent.get("message_id"):
+            self.db.add_bot_message(chat_id, int(sent["message_id"]), f"Крокодил: {clue}")
+
+    async def send_crocodile_hint(self, chat_id: int, automatic: bool = False):
+        assert self.tg
+        game = self.db.get_crocodile_game(chat_id)
+        if not game or not game.get("active") or not game.get("word"):
+            return
+        word = str(game["word"])
+        clues = self.CROCODILE_WORDS.get(word)
+        if not clues:
+            return
+        current_index = int(game.get("clue_index", 0) or 0)
+        if current_index >= len(clues) - 1:
+            if not automatic:
+                await self.send_command_notice(chat_id, "Больше подсказок нет — думайте 😄")
+            return
+        new_index = self.db.advance_crocodile_clue(chat_id)
+        new_index = min(new_index, len(clues) - 1)
+        label = "Автоподсказка" if automatic else "Подсказка"
+        await self.tg.send(
+            chat_id,
+            f"💡 {label}: {clues[new_index]}",
+            reply_markup=self.crocodile_keyboard(),
+        )
+
+    async def stop_crocodile_game(self, chat_id: int, announce: bool = True):
+        assert self.tg
+        game = self.db.get_crocodile_game(chat_id)
+        if not game or not game.get("active"):
+            if announce:
+                await self.send_command_notice(chat_id, "Сейчас «Крокодил» не запущен.")
+            return
+        word = str(game.get("word") or "")
+        self.db.stop_crocodile_game(chat_id)
+        task = self.game_tasks.pop(chat_id, None)
+        if task and not task.done():
+            task.cancel()
+        if announce:
+            reveal = f" Последнее слово было: {word}." if word else ""
+            await self.tg.send(
+                chat_id,
+                f"🐊 Игра завершена.{reveal}\n\n{self.crocodile_score_text(chat_id)}",
+            )
+
+    async def handle_crocodile_guess(
+        self,
+        chat_id: int,
+        user_id: int,
+        display_name: str,
+        text: str,
+        kind: str,
+    ) -> bool:
+        game = self.db.get_crocodile_game(chat_id)
+        if not game or not game.get("active"):
+            return False
+
+        # Пока идёт игра, обычные автоответы Аксакала не перебивают участников.
+        if kind != "message" or not text.strip() or not game.get("word"):
+            return True
+
+        guess = self.normalize_crocodile_guess(text)
+        answer = self.normalize_crocodile_guess(str(game["word"]))
+        if not guess:
+            return True
+
+        import re
+        correct = bool(re.search(rf"(?<![a-zа-я0-9]){re.escape(answer)}(?![a-zа-я0-9])", guess))
+        if correct:
+            word = str(game["word"])
+            self.db.clear_crocodile_round(chat_id)
+            total = self.db.add_crocodile_score(chat_id, user_id, display_name, 1)
+            await self.tg.send(
+                chat_id,
+                f"🎉 {display_name} угадал! Слово: {word}.\n"
+                f"Теперь у него {total} очк.\n\n"
+                f"{self.crocodile_score_text(chat_id)}\n\n"
+                "Следующий раунд через 3 секунды…",
+            )
+            old_task = self.game_tasks.pop(chat_id, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+            task = asyncio.create_task(self.start_crocodile_round(chat_id, delay=3))
+            self.game_tasks[chat_id] = task
+            return True
+
+        attempts = self.db.register_crocodile_attempt(chat_id)
+        if attempts in {5, 10}:
+            await self.send_crocodile_hint(chat_id, automatic=True)
+        return True
+
+    @staticmethod
     def settings_keyboard(chat: dict[str, Any]) -> dict[str, Any]:
         mode = chat.get("hardness_mode", "auto")
         fixed = int(chat.get("fixed_hardness", 3))
