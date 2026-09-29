@@ -849,6 +849,49 @@ class AksakalBot:
             asyncio.create_task(self.delete_later(chat_id, int(sent["message_id"]), ttl))
         return sent
 
+    async def resume_active_games(self):
+        """Восстанавливает таймеры активных игр после перезапуска процесса."""
+        with self.db.connect() as conn:
+            chat_ids = [int(r["chat_id"]) for r in conn.execute("SELECT chat_id FROM chats").fetchall()]
+
+        for chat_id in chat_ids:
+            game = self.active_game(chat_id)
+            if not game:
+                continue
+
+            session = self.db.get_game_session(chat_id, game)
+            if not session or not session.get("active"):
+                self.db.start_game_session(chat_id, game, target_score=10, reset=False)
+
+            if game == "crocodile":
+                state = self.db.get_crocodile_game(chat_id) or {}
+                word = str(state.get("word") or "")
+                if word:
+                    self.set_game_timer(chat_id, self.crocodile_round_timer(chat_id, word))
+                else:
+                    self.game_tasks[chat_id] = asyncio.create_task(self.start_crocodile_round(chat_id, delay=1))
+            elif game == "cities":
+                state = self.db.get_city_game(chat_id) or {}
+                city = str(state.get("current_city") or "")
+                required = str(state.get("required_letter") or "")
+                if city and required:
+                    self.set_game_timer(chat_id, self.city_round_timer(chat_id, city, required))
+            elif game == "hangman":
+                state = self.db.get_hangman_game(chat_id) or {}
+                word = str(state.get("word") or "")
+                if word:
+                    self.set_game_timer(chat_id, self.hangman_round_timer(chat_id, word))
+            elif game == "quiz":
+                state = self.db.get_quiz_game(chat_id) or {}
+                question_id = str(state.get("question_id") or "")
+                if question_id:
+                    self.set_game_timer(chat_id, self.quiz_round_timer(chat_id, question_id))
+            elif game == "whoami":
+                state = self.db.get_whoami_game(chat_id) or {}
+                answer = str(state.get("answer") or "")
+                if answer:
+                    self.set_game_timer(chat_id, self.whoami_round_timer(chat_id, answer))
+
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
@@ -865,6 +908,7 @@ class AksakalBot:
                 print(f"bot profile sync warning: {e}")
             print(f"Аксакал запущен: @{me.get('username')}")
             print(self.ai_diagnostics())
+            await self.resume_active_games()
             worker = asyncio.create_task(self.silence_worker())
             try:
                 await self.poll()
@@ -1152,6 +1196,9 @@ class AksakalBot:
             if game_request == "rating":
                 await self.tg.send(chat_id, self.game_rating_text(chat_id))
                 return
+            if game_request == "rating_week":
+                await self.tg.send(chat_id, self.game_rating_text(chat_id, weekly=True))
+                return
             if game_request == "mystats":
                 await self.tg.send(chat_id, self.player_stats_text(chat_id, user_id, display))
                 return
@@ -1304,6 +1351,11 @@ class AksakalBot:
             return "stop"
         if low in {"пропусти слово", "пропустить слово", "следующее слово", "скип слово"}:
             return "skip"
+        if low in {
+            "рейтинг недели", "покажи рейтинг недели", "недельный рейтинг",
+            "показать рейтинг недели", "rating week", "weekly rating",
+        }:
+            return "rating_week"
         if low in {
             "rating", "рейтинг", "игровой рейтинг", "покажи рейтинг",
             "покажи rating", "показать рейтинг",
@@ -2210,7 +2262,11 @@ class AksakalBot:
             return True
         self.db.touch_game_participant(chat_id, "whoami", user_id, display_name)
         ratio = difflib.SequenceMatcher(None, guess, answer).ratio()
-        correct = answer in guess or guess in answer or ratio >= 0.88
+        correct = (
+            guess == answer
+            or (len(guess) >= 4 and (answer in guess or guess in answer))
+            or (len(guess) >= 4 and ratio >= 0.88)
+        )
         if correct:
             self.cancel_game_timer(chat_id)
             stats, won = await self.award_game_point(chat_id, "whoami", user_id, display_name)
