@@ -333,6 +333,52 @@ jobs:
           print("Crocodile game smoke test OK")
           PY
 
+      - name: Natural game start, rating and Cities smoke test
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+          from bot import AksakalBot
+          from db import Database
+
+          assert AksakalBot.detect_game_request("давай играть в крокодила") == "crocodile"
+          assert AksakalBot.detect_game_request("давайте сыграем в города") == "cities"
+          assert AksakalBot.detect_game_request("rating") == "rating"
+          assert AksakalBot.detect_game_request("покажи рейтинг") == "rating"
+          assert AksakalBot.city_last_letter("Астрахань") == "н"
+          assert AksakalBot.city_last_letter("Тверь") == "р"
+          assert len(AksakalBot.CITY_NAMES) >= 100
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              db.ensure_chat(-100888, "Игры", 3, 10, 180)
+              db.start_city_game(-100888, "Москва", "а")
+              game = db.get_city_game(-100888)
+              assert game and game["active"] == 1
+              assert game["required_letter"] == "а"
+
+              db.update_city_game(-100888, "Анапа", "а", ["москва", "анапа"])
+              game = db.get_city_game(-100888)
+              assert game["current_city"] == "Анапа"
+              assert game["round_number"] == 2
+
+              assert db.add_city_score(-100888, 7, "Али") == 1
+              assert db.add_city_score(-100888, 7, "Али") == 2
+              top = db.city_top(-100888)
+              assert top[0]["user_id"] == 7 and top[0]["score"] == 2
+
+              db.stop_city_game(-100888)
+              assert db.get_city_game(-100888)["active"] == 0
+          finally:
+              try:
+                  os.remove(path)
+              except FileNotFoundError:
+                  pass
+          print("natural game/rating/cities smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
