@@ -1209,52 +1209,296 @@ class AksakalBot:
         return " ".join(low.split())
 
     @staticmethod
+    def normalize_city_name(text: str) -> str:
+        import re
+        low = (text or "").lower().replace("ё", "е")
+        low = re.sub(r"[-–—]+", " ", low)
+        low = re.sub(r"[^а-яa-z\s]+", " ", low)
+        return " ".join(low.split())
+
+    def active_game(self, chat_id: int) -> str | None:
+        checks = (
+            ("crocodile", self.db.get_crocodile_game(chat_id)),
+            ("cities", self.db.get_city_game(chat_id)),
+            ("hangman", self.db.get_hangman_game(chat_id)),
+            ("quiz", self.db.get_quiz_game(chat_id)),
+            ("whoami", self.db.get_whoami_game(chat_id)),
+        )
+        for game, state in checks:
+            if state and state.get("active"):
+                return game
+        return None
+
+    @staticmethod
+    def game_center_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "🐊 Крокодил", "callback_data": "set:game:croc"},
+                    {"text": "🏙 Города", "callback_data": "set:game:cities"},
+                ],
+                [
+                    {"text": "🔤 Виселица", "callback_data": "set:game:hangman"},
+                    {"text": "❓ Викторина", "callback_data": "set:game:quiz"},
+                ],
+                [
+                    {"text": "🎭 Кто я?", "callback_data": "set:game:whoami"},
+                ],
+                [
+                    {"text": "🏆 Рейтинг", "callback_data": "set:game:rating"},
+                ],
+            ]
+        }
+
+    async def show_game_center(self, chat_id: int):
+        assert self.tg
+        active = self.active_game(chat_id)
+        suffix = f"\n\nСейчас идёт: {self.GAME_LABELS.get(active, active)}." if active else ""
+        await self.tg.send(
+            chat_id,
+            "🎮 Во что играем?\n"
+            "Сессия идёт до 10 очков. Победитель объявляется автоматически, после чего Аксакал возвращается к обычному общению."
+            + suffix,
+            reply_markup=self.game_center_keyboard(),
+        )
+
+    @classmethod
+    def detect_game_request(cls, text: str) -> str | None:
+        import re
+        low = cls.normalize_crocodile_guess(text)
+        if not low:
+            return None
+
+        if low in {
+            "закончи игру", "закончить игру", "заканчивай игру",
+            "останови игру", "остановить игру", "стоп игра", "стоп игру",
+            "хватит играть", "закрой игру",
+        }:
+            return "stop"
+        if low in {"пропусти слово", "пропустить слово", "следующее слово", "скип слово"}:
+            return "skip"
+        if low in {
+            "rating", "рейтинг", "игровой рейтинг", "покажи рейтинг",
+            "покажи rating", "показать рейтинг",
+        }:
+            return "rating"
+        if low in {"моя статистика", "мои результаты", "мой рейтинг", "mystats"}:
+            return "mystats"
+
+        play = bool(re.search(r"\b(давай|давайте|играем|поиграем|сыграем|играть|сыграть|запусти|запускай|начни|начинаем)\b", low))
+        if play and re.search(r"\bкрокодил(?:а|е)?\b", low):
+            return "crocodile"
+        if play and (re.search(r"\bгорода\b", low) or "в города" in low):
+            return "cities"
+        if play and re.search(r"\bвиселиц\w*\b", low):
+            return "hangman"
+        if play and re.search(r"\bвикторин\w*\b", low):
+            return "quiz"
+        if play and ("кто я" in low or "угадай кто" in low):
+            return "whoami"
+        if low in {"давай играть", "давайте играть", "поиграем", "во что поиграем", "давай поиграем", "играть"}:
+            return "center"
+        return None
+
+    def cancel_game_timer(self, chat_id: int):
+        task = self.game_timer_tasks.pop(chat_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    def set_game_timer(self, chat_id: int, coroutine):
+        self.cancel_game_timer(chat_id)
+        task = asyncio.create_task(coroutine)
+        self.game_timer_tasks[chat_id] = task
+        return task
+
+    def session_score_text(self, chat_id: int, game: str, limit: int = 5) -> str:
+        rows = self.db.game_session_top(chat_id, game, limit)
+        if not rows:
+            return "Счёт сессии пока пуст."
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, item in enumerate(rows):
+            place = medals[i] if i < 3 else f"{i + 1}."
+            lines.append(f"{place} {item['display_name']} — {item['score']}/10")
+        return "🏁 Счёт текущей сессии:\n" + "\n".join(lines)
+
+    @staticmethod
+    def current_week_start_ts() -> int:
+        now = datetime.now(timezone.utc)
+        start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc) - timedelta(days=now.weekday())
+        return int(start.timestamp())
+
+    def game_rating_text(self, chat_id: int, game: str | None = None, weekly: bool = False) -> str:
+        label = self.GAME_LABELS.get(game, "Все игры") if game else "Все игры"
+        if weekly:
+            rows = self.db.weekly_game_rating(chat_id, self.current_week_start_ts(), game=game, limit=10)
+            heading = f"📅 РЕЙТИНГ НЕДЕЛИ · {label}"
+        else:
+            rows = self.db.game_rating(chat_id, game=game, limit=10)
+            heading = f"🏆 ВЕЧНЫЙ РЕЙТИНГ · {label}"
+
+        if not rows:
+            return heading + "\nПока без очков."
+
+        medals = ["🥇", "🥈", "🥉"]
+        lines = []
+        for i, item in enumerate(rows):
+            place = medals[i] if i < 3 else f"{i + 1}."
+            if weekly:
+                lines.append(f"{place} {item['display_name']} — {item['points']}")
+            else:
+                lines.append(
+                    f"{place} {item['display_name']} — {item['points']} очк. · побед {item['wins']}"
+                )
+        return heading + "\n\n" + "\n".join(lines)
+
+    def player_stats_text(self, chat_id: int, user_id: int, display_name: str) -> str:
+        stats = self.db.player_game_stats(chat_id, user_id)
+        achievements = self.db.player_achievements(chat_id, user_id)
+        if not stats:
+            return f"📊 {display_name}, игровой статистики пока нет."
+
+        lines = [f"📊 Статистика · {display_name}"]
+        total_points = total_wins = total_games = 0
+        for item in stats:
+            game = str(item["game"])
+            total_points += int(item["points"] or 0)
+            total_wins += int(item["wins"] or 0)
+            total_games += int(item["games_played"] or 0)
+            lines.append(
+                f"{self.GAME_LABELS.get(game, game)}: "
+                f"{item['points']} очк. · побед {item['wins']} · сыграно {item['games_played']} · "
+                f"лучшая серия {item['best_streak']}"
+            )
+        lines.insert(1, f"Всего: {total_points} очк. · побед {total_wins} · игровых сессий {total_games}")
+        if achievements:
+            lines.append("\n🔥 Достижения:")
+            lines.extend(f"• {item['title']}" for item in achievements[:8])
+        return "\n".join(lines)
+
+    def evaluate_achievements(self, chat_id: int, user_id: int, game: str, stats: dict[str, Any]) -> list[str]:
+        unlocked: list[str] = []
+        if int(stats.get("streak", 0) or 0) >= 3:
+            if self.db.unlock_achievement(chat_id, user_id, "streak3", "🔥 Три правильных ответа подряд"):
+                unlocked.append("🔥 Три правильных ответа подряд")
+        if game == "cities" and int(stats.get("correct", 0) or 0) >= 50:
+            if self.db.unlock_achievement(chat_id, user_id, "cities50", "🏙 50 правильно названных городов"):
+                unlocked.append("🏙 50 правильно названных городов")
+        if game == "crocodile" and int(stats.get("wins", 0) or 0) >= 10:
+            if self.db.unlock_achievement(chat_id, user_id, "croc10wins", "🐊 10 побед в Крокодиле"):
+                unlocked.append("🐊 10 побед в Крокодиле")
+        return unlocked
+
+    async def award_game_point(self, chat_id: int, game: str, user_id: int, display_name: str) -> tuple[dict[str, Any], bool]:
+        stats = self.db.award_game_point(chat_id, game, user_id, display_name, 1)
+        achievements = self.evaluate_achievements(chat_id, user_id, game, stats)
+        if achievements and self.tg:
+            await self.tg.send(chat_id, f"🏅 {display_name} получает достижение: " + ", ".join(achievements))
+
+        if stats.get("won"):
+            final_stats = self.db.register_game_session_win(chat_id, game, user_id, display_name)
+            win_achievements = self.evaluate_achievements(chat_id, user_id, game, final_stats)
+            if win_achievements and self.tg:
+                await self.tg.send(chat_id, f"🏅 {display_name} получает достижение: " + ", ".join(win_achievements))
+            await self.finish_game_winner(chat_id, game, display_name)
+            return stats, True
+        return stats, False
+
+    async def finish_game_winner(self, chat_id: int, game: str, display_name: str):
+        assert self.tg
+        self.cancel_game_timer(chat_id)
+        await self.stop_specific_game(chat_id, game, end_session=False)
+        top = self.session_score_text(chat_id, game, 10)
+        await self.tg.send(
+            chat_id,
+            f"🥇 {display_name} набирает 10 очков и выигрывает {self.GAME_LABELS.get(game, game)}!\n\n"
+            f"{top}\n\n"
+            "Игра закончена. Аксакал снова в обычном режиме общения.",
+        )
+
+    async def stop_specific_game(self, chat_id: int, game: str, end_session: bool = True):
+        self.cancel_game_timer(chat_id)
+        task = self.game_tasks.pop(chat_id, None)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        if game == "crocodile":
+            self.db.stop_crocodile_game(chat_id)
+        elif game == "cities":
+            self.db.stop_city_game(chat_id)
+        elif game == "hangman":
+            self.db.stop_hangman_game(chat_id)
+        elif game == "quiz":
+            self.db.stop_quiz_game(chat_id)
+        elif game == "whoami":
+            self.db.stop_whoami_game(chat_id)
+        if end_session:
+            self.db.end_game_session(chat_id, game)
+
+    async def stop_active_game(self, chat_id: int):
+        assert self.tg
+        game = self.active_game(chat_id)
+        if not game:
+            await self.send_command_notice(chat_id, "Сейчас активной игры нет.")
+            return
+        await self.stop_specific_game(chat_id, game)
+        await self.tg.send(
+            chat_id,
+            f"⏹ {self.GAME_LABELS.get(game, 'Игра')} закончена.\n\n"
+            f"{self.session_score_text(chat_id, game)}\n\n"
+            "Возвращаемся к обычному общению.",
+        )
+
+    async def ensure_game_can_start(self, chat_id: int, requested: str) -> bool:
+        assert self.tg
+        active = self.active_game(chat_id)
+        if active and active != requested:
+            await self.tg.send(
+                chat_id,
+                f"Сейчас идёт {self.GAME_LABELS.get(active, active)}. "
+                "Напишите «закончи игру», а потом запускайте другую.",
+            )
+            return False
+        return True
+
+    @staticmethod
     def crocodile_keyboard() -> dict[str, Any]:
         return {
             "inline_keyboard": [
                 [
                     {"text": "💡 Подсказка", "callback_data": "set:croc:hint"},
+                    {"text": "⏭ Пропустить", "callback_data": "set:croc:skip"},
+                ],
+                [
                     {"text": "⏹ Завершить", "callback_data": "set:croc:stop"},
-                ]
+                ],
             ]
         }
 
-    def crocodile_score_text(self, chat_id: int) -> str:
-        top = self.db.crocodile_top(chat_id, 5)
-        if not top:
-            return "Счёт пока пуст."
-        medals = ["🥇", "🥈", "🥉", "4.", "5."]
-        rows = [
-            f"{medals[i]} {item['display_name']} — {item['score']}"
-            for i, item in enumerate(top)
-        ]
-        return "🏆 Счёт:\n" + "\n".join(rows)
-
     async def start_crocodile_game(self, chat_id: int):
         assert self.tg
-        city_game = self.db.get_city_game(chat_id)
-        if city_game and city_game.get("active"):
-            await self.tg.send(chat_id, "Сейчас идёт 🏙 игра в города. Сначала закончим её, потом запустим «Крокодила».")
+        if not await self.ensure_game_can_start(chat_id, "crocodile"):
             return
         current = self.db.get_crocodile_game(chat_id)
         if current and current.get("active"):
             if current.get("word"):
                 await self.tg.send(
                     chat_id,
-                    "🐊 Крокодил уже идёт. Пишите варианты прямо в чат.",
+                    f"🐊 Крокодил уже идёт. {self.session_score_text(chat_id, 'crocodile')}\n"
+                    "Пишите варианты прямо в чат.",
                     reply_markup=self.crocodile_keyboard(),
                 )
             else:
-                # Например, бот перезапустился между раундами: продолжаем игру,
-                # а не оставляем её в состоянии active без нового слова.
                 await self.start_crocodile_round(chat_id)
             return
+
         self.db.start_crocodile_game(chat_id)
+        self.db.start_game_session(chat_id, "crocodile", target_score=10, reset=True)
         await self.tg.send(
             chat_id,
             "🐊 Начинаем «Крокодила»!\n\n"
-            "Я объясняю слово, не называя его. Все участники пишут варианты прямо в чат. "
-            "Кто первым угадает — получает +1 очко. После правильного ответа я сам начинаю следующий раунд.",
+            "Я объясняю слово, не называя его. Первый угадавший получает +1. "
+            "Играем до 10 очков. Если группа быстро угадывает, слова становятся сложнее. "
+            "Через 35 секунд без ответа дам подсказку, затем раскрою слово и начну новый раунд.",
         )
         await self.start_crocodile_round(chat_id)
 
@@ -1266,22 +1510,47 @@ class AksakalBot:
         if not game or not game.get("active"):
             return
 
+        difficulty = max(1, min(3, int(game.get("difficulty", 1) or 1)))
         previous = self.normalize_crocodile_guess(str(game.get("word") or ""))
-        words = [word for word in self.CROCODILE_WORDS if self.normalize_crocodile_guess(word) != previous]
-        word = random.choice(words or list(self.CROCODILE_WORDS))
+        level_words = [
+            word for word in self.CROCODILE_LEVELS.get(difficulty, ())
+            if word in self.CROCODILE_WORDS and self.normalize_crocodile_guess(word) != previous
+        ]
+        word = random.choice(level_words or list(self.CROCODILE_WORDS))
         self.db.set_crocodile_round(chat_id, word)
         fresh = self.db.get_crocodile_game(chat_id) or {}
         round_number = int(fresh.get("round_number", 1) or 1)
         clue = self.CROCODILE_WORDS[word][0]
+        labels = {1: "лёгкая", 2: "средняя", 3: "сложная"}
         sent = await self.tg.send(
             chat_id,
-            f"🐊 КРОКОДИЛ · Раунд {round_number}\n\n"
+            f"🐊 КРОКОДИЛ · Раунд {round_number} · {labels.get(difficulty, 'лёгкая')} сложность\n\n"
             f"🗣 {clue}\n\n"
-            "Пишите варианты прямо в чат. Первому угадавшему +1.",
+            "Первому угадавшему +1. Сессия до 10 очков.",
             reply_markup=self.crocodile_keyboard(),
         )
         if isinstance(sent, dict) and sent.get("message_id"):
             self.db.add_bot_message(chat_id, int(sent["message_id"]), f"Крокодил: {clue}")
+        self.set_game_timer(chat_id, self.crocodile_round_timer(chat_id, word))
+
+    async def crocodile_round_timer(self, chat_id: int, word: str):
+        try:
+            await asyncio.sleep(35)
+            game = self.db.get_crocodile_game(chat_id)
+            if not game or not game.get("active") or str(game.get("word") or "") != word:
+                return
+            await self.send_crocodile_hint(chat_id, automatic=True)
+            await asyncio.sleep(30)
+            game = self.db.get_crocodile_game(chat_id)
+            if not game or not game.get("active") or str(game.get("word") or "") != word:
+                return
+            self.db.clear_crocodile_round(chat_id)
+            self.db.update_crocodile_difficulty(chat_id, fast=False)
+            if self.tg:
+                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
+            await self.start_crocodile_round(chat_id, delay=2)
+        except asyncio.CancelledError:
+            return
 
     async def send_crocodile_hint(self, chat_id: int, automatic: bool = False):
         assert self.tg
@@ -1300,11 +1569,23 @@ class AksakalBot:
         new_index = self.db.advance_crocodile_clue(chat_id)
         new_index = min(new_index, len(clues) - 1)
         label = "Автоподсказка" if automatic else "Подсказка"
-        await self.tg.send(
-            chat_id,
-            f"💡 {label}: {clues[new_index]}",
-            reply_markup=self.crocodile_keyboard(),
-        )
+        await self.tg.send(chat_id, f"💡 {label}: {clues[new_index]}", reply_markup=self.crocodile_keyboard())
+
+    async def skip_crocodile_word(self, chat_id: int):
+        assert self.tg
+        game = self.db.get_crocodile_game(chat_id)
+        if not game or not game.get("active") or not game.get("word"):
+            await self.send_command_notice(chat_id, "Сейчас нет слова для пропуска.")
+            return
+        if not self.db.use_crocodile_skip(chat_id):
+            await self.send_command_notice(chat_id, "В этом раунде слово уже пропускали.")
+            return
+        word = str(game["word"])
+        self.cancel_game_timer(chat_id)
+        self.db.clear_crocodile_round(chat_id)
+        await self.tg.send(chat_id, f"⏭ Пропускаем. Было загадано: {word}. Новое слово через 2 секунды.")
+        task = asyncio.create_task(self.start_crocodile_round(chat_id, delay=2))
+        self.game_tasks[chat_id] = task
 
     async def stop_crocodile_game(self, chat_id: int, announce: bool = True):
         assert self.tg
@@ -1314,15 +1595,13 @@ class AksakalBot:
                 await self.send_command_notice(chat_id, "Сейчас «Крокодил» не запущен.")
             return
         word = str(game.get("word") or "")
-        self.db.stop_crocodile_game(chat_id)
-        task = self.game_tasks.pop(chat_id, None)
-        if task and not task.done():
-            task.cancel()
+        await self.stop_specific_game(chat_id, "crocodile")
         if announce:
             reveal = f" Последнее слово было: {word}." if word else ""
             await self.tg.send(
                 chat_id,
-                f"🐊 Игра завершена.{reveal}\n\n{self.crocodile_score_text(chat_id)}",
+                f"🐊 Игра завершена.{reveal}\n\n{self.session_score_text(chat_id, 'crocodile')}\n\n"
+                "Возвращаемся к обычному общению.",
             )
 
     async def handle_crocodile_guess(
@@ -1336,11 +1615,10 @@ class AksakalBot:
         game = self.db.get_crocodile_game(chat_id)
         if not game or not game.get("active"):
             return False
-
-        # Пока идёт игра, обычные автоответы Аксакала не перебивают участников.
         if kind != "message" or not text.strip() or not game.get("word"):
             return True
 
+        self.db.touch_game_participant(chat_id, "crocodile", user_id, display_name)
         guess = self.normalize_crocodile_guess(text)
         answer = self.normalize_crocodile_guess(str(game["word"]))
         if not guess:
@@ -1350,18 +1628,25 @@ class AksakalBot:
         correct = bool(re.search(rf"(?<![a-zа-я0-9]){re.escape(answer)}(?![a-zа-я0-9])", guess))
         if correct:
             word = str(game["word"])
+            elapsed = int(time.time()) - int(game.get("round_started_at", 0) or 0)
+            attempts = int(game.get("attempts", 0) or 0)
+            self.cancel_game_timer(chat_id)
             self.db.clear_crocodile_round(chat_id)
-            total = self.db.add_crocodile_score(chat_id, user_id, display_name, 1)
+            difficulty = self.db.update_crocodile_difficulty(
+                chat_id,
+                fast=bool(elapsed and elapsed <= 25 and attempts <= 3),
+            )
+            self.db.add_crocodile_score(chat_id, user_id, display_name, 1)
+            stats, won = await self.award_game_point(chat_id, "crocodile", user_id, display_name)
+            if won:
+                return True
             await self.tg.send(
                 chat_id,
                 f"🎉 {display_name} угадал! Слово: {word}.\n"
-                f"Счёт игрока: {total}.\n\n"
-                f"{self.crocodile_score_text(chat_id)}\n\n"
+                f"Счёт сессии: {stats['session_score']}/10. Текущая сложность: {difficulty}/3.\n\n"
+                f"{self.session_score_text(chat_id, 'crocodile')}\n\n"
                 "Следующий раунд через 3 секунды…",
             )
-            old_task = self.game_tasks.pop(chat_id, None)
-            if old_task and not old_task.done():
-                old_task.cancel()
             task = asyncio.create_task(self.start_crocodile_round(chat_id, delay=3))
             self.game_tasks[chat_id] = task
             return True
@@ -1370,32 +1655,6 @@ class AksakalBot:
         if attempts in {5, 10}:
             await self.send_crocodile_hint(chat_id, automatic=True)
         return True
-
-    @classmethod
-    def detect_game_request(cls, text: str) -> str | None:
-        import re
-        low = cls.normalize_crocodile_guess(text)
-        if not low:
-            return None
-
-        if low in {
-            "закончи игру", "закончить игру", "заканчивай игру",
-            "останови игру", "остановить игру", "стоп игра", "стоп игру",
-            "хватит играть", "закрой игру",
-        }:
-            return "stop"
-
-        play = bool(re.search(r"\b(давай|давайте|играем|поиграем|сыграем|играть|сыграть|запусти|запускай|начни|начинаем)\b", low))
-        if play and re.search(r"\bкрокодил(?:а|е)?\b", low):
-            return "crocodile"
-        if play and (re.search(r"\bгорода\b", low) or "в города" in low):
-            return "cities"
-        if low in {
-            "rating", "рейтинг", "игровой рейтинг",
-            "покажи рейтинг", "покажи rating", "показать рейтинг",
-        }:
-            return "rating"
-        return None
 
     @staticmethod
     def city_last_letter(city: str) -> str:
@@ -1408,75 +1667,33 @@ class AksakalBot:
 
     @classmethod
     def city_lookup(cls) -> dict[str, str]:
-        return {
-            cls.normalize_crocodile_guess(city): city
-            for city in cls.CITY_NAMES
-        }
+        return {cls.normalize_city_name(city): city for city in cls.CITY_NAMES}
+
+    @classmethod
+    def resolve_city(cls, text: str) -> str | None:
+        normalized = cls.normalize_city_name(text)
+        if not normalized or len(normalized) < 2:
+            return None
+        lookup = cls.city_lookup()
+        if normalized in lookup:
+            return lookup[normalized]
+        matches = difflib.get_close_matches(normalized, list(lookup), n=1, cutoff=0.84)
+        return lookup[matches[0]] if matches else None
 
     @staticmethod
     def city_keyboard() -> dict[str, Any]:
-        return {
-            "inline_keyboard": [
-                [{"text": "⏹ Завершить города", "callback_data": "set:city:stop"}]
-            ]
-        }
-
-    def game_rating_text(self, chat_id: int) -> str:
-        croc = self.db.crocodile_top(chat_id, 10)
-        cities = self.db.city_top(chat_id, 10)
-        if not croc and not cities:
-            return "🏆 Игровой рейтинг пока пуст. Сначала надо кого-нибудь обыграть 😄"
-
-        def render(title: str, rows: list[dict[str, Any]]) -> str:
-            if not rows:
-                return f"{title}\n— пока без очков"
-            medals = ["🥇", "🥈", "🥉"]
-            lines = []
-            for i, item in enumerate(rows):
-                place = medals[i] if i < 3 else f"{i + 1}."
-                lines.append(f"{place} {item['display_name']} — {item['score']}")
-            return title + "\n" + "\n".join(lines)
-
-        parts = ["🏆 ИГРОВОЙ РЕЙТИНГ"]
-        if croc:
-            parts.append(render("🐊 Крокодил", croc))
-        if cities:
-            parts.append(render("🏙 Города", cities))
-        return "\n\n".join(parts)
-
-    async def stop_active_game(self, chat_id: int):
-        assert self.tg
-        croc = self.db.get_crocodile_game(chat_id)
-        cities = self.db.get_city_game(chat_id)
-
-        stopped = False
-        if croc and croc.get("active"):
-            await self.stop_crocodile_game(chat_id, announce=False)
-            stopped = True
-        if cities and cities.get("active"):
-            await self.stop_city_game(chat_id, announce=False)
-            stopped = True
-
-        if stopped:
-            await self.tg.send(
-                chat_id,
-                "⏹ Игра закончена. Возвращаемся к обычному общению.",
-            )
-        else:
-            await self.send_command_notice(chat_id, "Сейчас активной игры нет.")
+        return {"inline_keyboard": [[{"text": "⏹ Завершить города", "callback_data": "set:city:stop"}]]}
 
     async def start_city_game(self, chat_id: int):
         assert self.tg
-        croc = self.db.get_crocodile_game(chat_id)
-        if croc and croc.get("active"):
-            await self.tg.send(chat_id, "Сейчас идёт 🐊 «Крокодил». Сначала закончим его, потом сыграем в города.")
+        if not await self.ensure_game_can_start(chat_id, "cities"):
             return
-
         current = self.db.get_city_game(chat_id)
         if current and current.get("active"):
             await self.tg.send(
                 chat_id,
-                f"🏙 Города уже идут. Сейчас нужно назвать город на «{str(current.get('required_letter') or '').upper()}».",
+                f"🏙 Города уже идут. Нужно назвать город на «{str(current.get('required_letter') or '').upper()}».\n"
+                f"{self.session_score_text(chat_id, 'cities')}",
                 reply_markup=self.city_keyboard(),
             )
             return
@@ -1487,21 +1704,43 @@ class AksakalBot:
         first = ""
         for candidate in cities:
             required = self.city_last_letter(candidate)
-            if any(self.normalize_crocodile_guess(x).startswith(required) for x in self.CITY_NAMES):
+            if any(self.normalize_city_name(x).startswith(required) for x in self.CITY_NAMES):
                 first = candidate
                 break
         first = first or random.choice(cities)
         required = self.city_last_letter(first)
         self.db.start_city_game(chat_id, first, required)
+        self.db.start_game_session(chat_id, "cities", target_score=10, reset=True)
         await self.tg.send(
             chat_id,
             "🏙 Начинаем «Города»!\n\n"
-            "Я называю город, а любой участник отвечает городом на последнюю подходящую букву. "
-            "Повторять уже названные города нельзя. За каждый правильный ответ +1 очко.\n\n"
-            f"Я начинаю: {first}\n"
-            f"Ваш город на «{required.upper()}».",
+            "Я называю город, а участники отвечают городом на последнюю подходящую букву. "
+            "Повторять города нельзя. Небольшие опечатки и варианты с дефисом/«ё» я постараюсь распознать. "
+            "За правильный город +1. Играем до 10 очков.\n\n"
+            f"Я: {first}\nВаш город на «{required.upper()}».",
             reply_markup=self.city_keyboard(),
         )
+        self.set_game_timer(chat_id, self.city_round_timer(chat_id, first, required))
+
+    async def city_round_timer(self, chat_id: int, current_city: str, required: str):
+        try:
+            await asyncio.sleep(45)
+            game = self.db.get_city_game(chat_id)
+            if not game or not game.get("active") or str(game.get("current_city") or "") != current_city:
+                return
+            if self.tg:
+                await self.tg.send(chat_id, f"⏱ Кто продолжит? Нужен город на «{required.upper()}».")
+            await asyncio.sleep(45)
+            game = self.db.get_city_game(chat_id)
+            if not game or not game.get("active") or str(game.get("current_city") or "") != current_city:
+                return
+            if self.tg:
+                await self.tg.send(
+                    chat_id,
+                    f"🏙 Цепочка ждёт город на «{required.upper()}». Если надоело — напишите «закончи игру».",
+                )
+        except asyncio.CancelledError:
+            return
 
     async def stop_city_game(self, chat_id: int, announce: bool = True):
         assert self.tg
@@ -1510,9 +1749,13 @@ class AksakalBot:
             if announce:
                 await self.send_command_notice(chat_id, "Сейчас игра в города не запущена.")
             return
-        self.db.stop_city_game(chat_id)
+        await self.stop_specific_game(chat_id, "cities")
         if announce:
-            await self.tg.send(chat_id, f"🏙 Игра в города завершена.\n\n{self.game_rating_text(chat_id)}")
+            await self.tg.send(
+                chat_id,
+                f"🏙 Игра в города завершена.\n\n{self.session_score_text(chat_id, 'cities')}\n\n"
+                "Возвращаемся к обычному общению.",
+            )
 
     async def handle_city_guess(
         self,
@@ -1528,28 +1771,18 @@ class AksakalBot:
         if kind != "message" or not text.strip():
             return True
 
-        normalized = self.normalize_crocodile_guess(text)
-        if normalized in {"стоп игра", "стоп города", "хватит играть", "закончить игру"}:
-            await self.stop_city_game(chat_id)
-            return True
-
-        lookup = self.city_lookup()
-        city = lookup.get(normalized)
+        city = self.resolve_city(text)
         if not city:
-            # Обычный разговор во время игры не считаем ошибкой и не засоряем чат замечаниями.
             return True
 
         required = str(game.get("required_letter") or "").lower()
-        city_norm = self.normalize_crocodile_guess(city)
+        city_norm = self.normalize_city_name(city)
         if required and not city_norm.startswith(required):
-            await self.tg.send(
-                chat_id,
-                f"Не пойдёт 🙂 Сейчас нужен город на «{required.upper()}».",
-            )
+            await self.tg.send(chat_id, f"Не пойдёт 🙂 Сейчас нужен город на «{required.upper()}».")
             return True
 
         used = [
-            self.normalize_crocodile_guess(x)
+            self.normalize_city_name(x)
             for x in str(game.get("used_cities") or "").splitlines()
             if x.strip()
         ]
@@ -1557,52 +1790,416 @@ class AksakalBot:
             await self.tg.send(chat_id, f"{city} уже называли. Давай другой город на «{required.upper()}».")
             return True
 
+        self.db.touch_game_participant(chat_id, "cities", user_id, display_name)
         used.append(city_norm)
-        total = self.db.add_city_score(chat_id, user_id, display_name, 1)
+        self.cancel_game_timer(chat_id)
+        self.db.add_city_score(chat_id, user_id, display_name, 1)
+        stats, won = await self.award_game_point(chat_id, "cities", user_id, display_name)
+        if won:
+            return True
+
         bot_letter = self.city_last_letter(city)
         candidates = [
             candidate for candidate in self.CITY_NAMES
-            if self.normalize_crocodile_guess(candidate).startswith(bot_letter)
-            and self.normalize_crocodile_guess(candidate) not in used
+            if self.normalize_city_name(candidate).startswith(bot_letter)
+            and self.normalize_city_name(candidate) not in used
         ]
-
         if not candidates:
             remaining = [
                 candidate for candidate in self.CITY_NAMES
-                if self.normalize_crocodile_guess(candidate) not in used
+                if self.normalize_city_name(candidate) not in used
             ]
             if not remaining:
-                self.db.stop_city_game(chat_id)
+                await self.stop_specific_game(chat_id, "cities")
                 await self.tg.send(
                     chat_id,
-                    f"🔥 {display_name}: +1 за {city}. Вы перебрали весь мой список городов!\n\n"
-                    f"{self.game_rating_text(chat_id)}",
+                    f"🔥 {display_name}: +1 за {city}. В моей базе больше не осталось новых городов.\n\n"
+                    f"{self.session_score_text(chat_id, 'cities')}\n\nВозвращаемся к обычному общению.",
                 )
                 return True
             bot_city = random.choice(remaining)
-            used.append(self.normalize_crocodile_guess(bot_city))
-            next_letter = self.city_last_letter(bot_city)
-            self.db.update_city_game(chat_id, bot_city, next_letter, used)
-            await self.tg.send(
-                chat_id,
-                f"✅ {display_name}: {city} — засчитано, счёт {total}.\n"
-                f"На «{bot_letter.upper()}» у меня закончились варианты, поэтому начинаю новую цепочку.\n\n"
-                f"Я: {bot_city}\nВаш город на «{next_letter.upper()}».",
-                reply_markup=self.city_keyboard(),
-            )
-            return True
+            restart_note = f"На «{bot_letter.upper()}» закончились варианты, начинаю новую цепочку."
+        else:
+            bot_city = random.choice(candidates)
+            restart_note = ""
 
-        bot_city = random.choice(candidates)
-        used.append(self.normalize_crocodile_guess(bot_city))
+        used.append(self.normalize_city_name(bot_city))
         next_letter = self.city_last_letter(bot_city)
         self.db.update_city_game(chat_id, bot_city, next_letter, used)
+        prefix = f"{restart_note}\n" if restart_note else ""
         await self.tg.send(
             chat_id,
-            f"✅ {display_name}: {city} — +1, всего {total}.\n"
-            f"Я: {bot_city}\n"
-            f"Теперь ваш город на «{next_letter.upper()}».",
+            f"✅ {display_name}: {city} — +1, счёт сессии {stats['session_score']}/10.\n"
+            f"{prefix}Я: {bot_city}\n"
+            f"Теперь город на «{next_letter.upper()}».",
             reply_markup=self.city_keyboard(),
         )
+        self.set_game_timer(chat_id, self.city_round_timer(chat_id, bot_city, next_letter))
+        return True
+
+    @staticmethod
+    def hangman_keyboard() -> dict[str, Any]:
+        return {"inline_keyboard": [[{"text": "⏹ Завершить виселицу", "callback_data": "set:hang:stop"}]]}
+
+    @staticmethod
+    def hangman_pattern(word: str, guessed_letters: str) -> str:
+        guessed = set((guessed_letters or "").replace("ё", "е"))
+        result = []
+        for ch in word.lower().replace("ё", "е"):
+            if ch == " ":
+                result.append("   ")
+            elif ch == "-":
+                result.append("-")
+            elif ch in guessed:
+                result.append(ch.upper())
+            else:
+                result.append("_")
+        return " ".join(result)
+
+    async def start_hangman_game(self, chat_id: int):
+        assert self.tg
+        if not await self.ensure_game_can_start(chat_id, "hangman"):
+            return
+        current = self.db.get_hangman_game(chat_id)
+        if current and current.get("active"):
+            await self.tg.send(
+                chat_id,
+                f"🔤 Виселица уже идёт.\n{self.hangman_pattern(str(current['word']), str(current.get('guessed_letters') or ''))}",
+                reply_markup=self.hangman_keyboard(),
+            )
+            return
+        self.db.start_game_session(chat_id, "hangman", 10, reset=True)
+        await self.tg.send(
+            chat_id,
+            "🔤 Начинаем «Виселицу»! Называйте одну букву или сразу всё слово. "
+            "Шесть ошибок — слово раскрывается. За разгаданное слово +1, играем до 10.",
+        )
+        await self.start_hangman_round(chat_id)
+
+    async def start_hangman_round(self, chat_id: int, delay: float = 0):
+        assert self.tg
+        if delay:
+            await asyncio.sleep(delay)
+        if self.active_game(chat_id) not in {None, "hangman"}:
+            return
+        current = self.db.get_hangman_game(chat_id)
+        previous = str(current.get("word") or "") if current else ""
+        choices = [x for x in self.HANGMAN_WORDS if x[0] != previous]
+        word, hint = random.choice(choices or list(self.HANGMAN_WORDS))
+        self.db.set_hangman_round(chat_id, word, hint)
+        game = self.db.get_hangman_game(chat_id) or {}
+        await self.tg.send(
+            chat_id,
+            f"🔤 ВИСЕЛИЦА · Раунд {game.get('round_number', 1)}\n\n"
+            f"{self.hangman_pattern(word, '')}\n"
+            f"💡 Тема: {hint}\nОшибок: 0/6",
+            reply_markup=self.hangman_keyboard(),
+        )
+        self.set_game_timer(chat_id, self.hangman_round_timer(chat_id, word))
+
+    async def hangman_round_timer(self, chat_id: int, word: str):
+        try:
+            await asyncio.sleep(45)
+            game = self.db.get_hangman_game(chat_id)
+            if not game or not game.get("active") or str(game.get("word") or "") != word:
+                return
+            guessed = set(str(game.get("guessed_letters") or ""))
+            hidden = [ch for ch in word.lower().replace("ё", "е") if ch.isalpha() and ch not in guessed]
+            if hidden:
+                letter = random.choice(hidden)
+                guessed.add(letter)
+                letters = "".join(sorted(guessed))
+                self.db.update_hangman_game(chat_id, letters, int(game.get("misses", 0) or 0))
+                if self.tg:
+                    await self.tg.send(chat_id, f"💡 Автоподсказка: открываю букву «{letter.upper()}».\n{self.hangman_pattern(word, letters)}")
+            await asyncio.sleep(35)
+            game = self.db.get_hangman_game(chat_id)
+            if not game or not game.get("active") or str(game.get("word") or "") != word:
+                return
+            if self.tg:
+                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
+            await self.start_hangman_round(chat_id, delay=2)
+        except asyncio.CancelledError:
+            return
+
+    async def handle_hangman_guess(self, chat_id: int, user_id: int, display_name: str, text: str, kind: str) -> bool:
+        game = self.db.get_hangman_game(chat_id)
+        if not game or not game.get("active"):
+            return False
+        if kind != "message" or not text.strip():
+            return True
+
+        import re
+        guess = self.normalize_crocodile_guess(text).replace("-", "")
+        word = self.normalize_crocodile_guess(str(game["word"])).replace("-", "")
+        if not guess:
+            return True
+
+        letters_only = re.sub(r"[^а-яa-z]", "", guess)
+        if len(letters_only) != 1 and guess != word:
+            # Во время игры длинная обычная реплика не считается ошибкой.
+            return True
+
+        self.db.touch_game_participant(chat_id, "hangman", user_id, display_name)
+        guessed = set(str(game.get("guessed_letters") or "").replace("ё", "е"))
+        misses = int(game.get("misses", 0) or 0)
+        solved = False
+
+        if guess == word:
+            solved = True
+        else:
+            letter = letters_only.replace("ё", "е")
+            if letter in guessed:
+                await self.tg.send(chat_id, f"Букву «{letter.upper()}» уже называли.")
+                return True
+            guessed.add(letter)
+            if letter not in word:
+                misses += 1
+            normalized_word_letters = {ch for ch in word if ch.isalpha()}
+            solved = normalized_word_letters.issubset(guessed)
+
+        letters = "".join(sorted(guessed))
+        self.db.update_hangman_game(chat_id, letters, misses)
+        if solved:
+            self.cancel_game_timer(chat_id)
+            stats, won = await self.award_game_point(chat_id, "hangman", user_id, display_name)
+            if won:
+                return True
+            await self.tg.send(
+                chat_id,
+                f"🎉 {display_name} завершил слово «{game['word']}»! +1, счёт {stats['session_score']}/10.\n"
+                "Следующее слово через 3 секунды…",
+            )
+            task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
+            self.game_tasks[chat_id] = task
+            return True
+
+        if misses >= 6:
+            self.cancel_game_timer(chat_id)
+            await self.tg.send(chat_id, f"💀 Шесть ошибок. Слово было: {game['word']}. Следующее через 3 секунды…")
+            task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
+            self.game_tasks[chat_id] = task
+            return True
+
+        await self.tg.send(
+            chat_id,
+            f"{'✅ Есть такая буква.' if letters_only and letters_only in word else '❌ Нет такой буквы.'}\n"
+            f"{self.hangman_pattern(str(game['word']), letters)}\nОшибок: {misses}/6",
+            reply_markup=self.hangman_keyboard(),
+        )
+        return True
+
+    @staticmethod
+    def quiz_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "1", "callback_data": "set:quiz:1"},
+                    {"text": "2", "callback_data": "set:quiz:2"},
+                    {"text": "3", "callback_data": "set:quiz:3"},
+                    {"text": "4", "callback_data": "set:quiz:4"},
+                ],
+                [{"text": "⏹ Завершить викторину", "callback_data": "set:quiz:stop"}],
+            ]
+        }
+
+    async def start_quiz_game(self, chat_id: int):
+        assert self.tg
+        if not await self.ensure_game_can_start(chat_id, "quiz"):
+            return
+        current = self.db.get_quiz_game(chat_id)
+        if current and current.get("active"):
+            await self.tg.send(chat_id, "❓ Викторина уже идёт. Отвечайте цифрой 1–4.", reply_markup=self.quiz_keyboard())
+            return
+        self.db.start_game_session(chat_id, "quiz", 10, reset=True)
+        await self.tg.send(chat_id, "❓ Начинаем викторину! Первый правильный ответ получает +1. Играем до 10 очков.")
+        await self.start_quiz_round(chat_id)
+
+    async def start_quiz_round(self, chat_id: int, delay: float = 0):
+        assert self.tg
+        if delay:
+            await asyncio.sleep(delay)
+        current = self.db.get_quiz_game(chat_id)
+        previous = str(current.get("question_id") or "") if current else ""
+        choices = [q for q in self.QUIZ_QUESTIONS if q["id"] != previous]
+        item = random.choice(choices or list(self.QUIZ_QUESTIONS))
+        options = tuple(item["options"])
+        self.db.set_quiz_round(chat_id, str(item["id"]), str(item["a"]), str(item["q"]), "\n".join(options))
+        state = self.db.get_quiz_game(chat_id) or {}
+        rendered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
+        await self.tg.send(
+            chat_id,
+            f"❓ ВИКТОРИНА · Вопрос {state.get('round_number', 1)}\n\n{item['q']}\n\n{rendered}\n\n"
+            "Ответьте цифрой 1–4 или текстом ответа.",
+            reply_markup=self.quiz_keyboard(),
+        )
+        self.set_game_timer(chat_id, self.quiz_round_timer(chat_id, str(item["id"])))
+
+    async def quiz_round_timer(self, chat_id: int, question_id: str):
+        try:
+            await asyncio.sleep(45)
+            state = self.db.get_quiz_game(chat_id)
+            if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
+                return
+            if self.tg:
+                await self.tg.send(chat_id, "⏱ Подсказка: вариантов всего четыре — пора выбирать 😄")
+            await asyncio.sleep(30)
+            state = self.db.get_quiz_game(chat_id)
+            if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
+                return
+            if self.tg:
+                await self.tg.send(chat_id, f"⌛ Правильный ответ: {state['answer']}. Следующий вопрос…")
+            await self.start_quiz_round(chat_id, delay=2)
+        except asyncio.CancelledError:
+            return
+
+    async def handle_quiz_guess(self, chat_id: int, user_id: int, display_name: str, text: str, kind: str) -> bool:
+        state = self.db.get_quiz_game(chat_id)
+        if not state or not state.get("active"):
+            return False
+        if kind != "message" or not text.strip():
+            return True
+        options = str(state.get("options") or "").splitlines()
+        raw = self.normalize_crocodile_guess(text)
+        selected = ""
+        aliases = {"a": 0, "а": 0, "b": 1, "б": 1, "c": 2, "в": 2, "d": 3, "г": 3}
+        if raw.isdigit() and 1 <= int(raw) <= len(options):
+            selected = options[int(raw) - 1]
+        elif raw in aliases and aliases[raw] < len(options):
+            selected = options[aliases[raw]]
+        else:
+            for option in options:
+                if self.normalize_crocodile_guess(option) == raw:
+                    selected = option
+                    break
+        if not selected:
+            return True
+
+        self.db.touch_game_participant(chat_id, "quiz", user_id, display_name)
+        answer = str(state.get("answer") or "")
+        if self.normalize_crocodile_guess(selected) == self.normalize_crocodile_guess(answer):
+            self.cancel_game_timer(chat_id)
+            stats, won = await self.award_game_point(chat_id, "quiz", user_id, display_name)
+            if won:
+                return True
+            await self.tg.send(
+                chat_id,
+                f"✅ {display_name} первым ответил правильно: {answer}. +1, счёт {stats['session_score']}/10.\n"
+                "Следующий вопрос через 3 секунды…",
+            )
+            task = asyncio.create_task(self.start_quiz_round(chat_id, delay=3))
+            self.game_tasks[chat_id] = task
+        else:
+            attempts = self.db.add_quiz_attempt(chat_id)
+            if attempts <= 3:
+                await self.tg.send(chat_id, f"❌ {display_name}, не этот вариант.")
+        return True
+
+    @staticmethod
+    def whoami_keyboard() -> dict[str, Any]:
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "💡 Подсказка", "callback_data": "set:who:hint"},
+                    {"text": "⏹ Завершить", "callback_data": "set:who:stop"},
+                ]
+            ]
+        }
+
+    async def start_whoami_game(self, chat_id: int):
+        assert self.tg
+        if not await self.ensure_game_can_start(chat_id, "whoami"):
+            return
+        current = self.db.get_whoami_game(chat_id)
+        if current and current.get("active"):
+            await self.tg.send(chat_id, "🎭 «Кто я?» уже идёт. Пишите варианты.", reply_markup=self.whoami_keyboard())
+            return
+        self.db.start_game_session(chat_id, "whoami", 10, reset=True)
+        await self.tg.send(chat_id, "🎭 Начинаем «Кто я?»! Я даю факты, вы угадываете персонажа или человека. Первый получает +1. До 10 очков.")
+        await self.start_whoami_round(chat_id)
+
+    async def start_whoami_round(self, chat_id: int, delay: float = 0):
+        assert self.tg
+        if delay:
+            await asyncio.sleep(delay)
+        current = self.db.get_whoami_game(chat_id)
+        previous = str(current.get("answer") or "") if current else ""
+        answers = [x for x in self.WHOAMI_ITEMS if x != previous]
+        answer = random.choice(answers or list(self.WHOAMI_ITEMS))
+        self.db.set_whoami_round(chat_id, answer)
+        state = self.db.get_whoami_game(chat_id) or {}
+        await self.tg.send(
+            chat_id,
+            f"🎭 КТО Я? · Раунд {state.get('round_number', 1)}\n\n"
+            f"🗣 {self.WHOAMI_ITEMS[answer][0]}",
+            reply_markup=self.whoami_keyboard(),
+        )
+        self.set_game_timer(chat_id, self.whoami_round_timer(chat_id, answer))
+
+    async def send_whoami_hint(self, chat_id: int, automatic: bool = False):
+        assert self.tg
+        state = self.db.get_whoami_game(chat_id)
+        if not state or not state.get("active"):
+            return
+        answer = str(state.get("answer") or "")
+        clues = self.WHOAMI_ITEMS.get(answer)
+        if not clues:
+            return
+        idx = int(state.get("clue_index", 0) or 0)
+        if idx >= len(clues) - 1:
+            if not automatic:
+                await self.send_command_notice(chat_id, "Подсказки закончились.")
+            return
+        idx = min(self.db.advance_whoami_clue(chat_id), len(clues) - 1)
+        await self.tg.send(chat_id, f"💡 {'Автоподсказка' if automatic else 'Подсказка'}: {clues[idx]}")
+
+    async def whoami_round_timer(self, chat_id: int, answer: str):
+        try:
+            await asyncio.sleep(35)
+            state = self.db.get_whoami_game(chat_id)
+            if not state or not state.get("active") or str(state.get("answer") or "") != answer:
+                return
+            await self.send_whoami_hint(chat_id, automatic=True)
+            await asyncio.sleep(30)
+            state = self.db.get_whoami_game(chat_id)
+            if not state or not state.get("active") or str(state.get("answer") or "") != answer:
+                return
+            if self.tg:
+                await self.tg.send(chat_id, f"⌛ Ответ: {answer}. Следующий раунд…")
+            await self.start_whoami_round(chat_id, delay=2)
+        except asyncio.CancelledError:
+            return
+
+    async def handle_whoami_guess(self, chat_id: int, user_id: int, display_name: str, text: str, kind: str) -> bool:
+        state = self.db.get_whoami_game(chat_id)
+        if not state or not state.get("active"):
+            return False
+        if kind != "message" or not text.strip():
+            return True
+
+        guess = self.normalize_crocodile_guess(text)
+        answer = self.normalize_crocodile_guess(str(state.get("answer") or ""))
+        if not guess:
+            return True
+        self.db.touch_game_participant(chat_id, "whoami", user_id, display_name)
+        ratio = difflib.SequenceMatcher(None, guess, answer).ratio()
+        correct = answer in guess or guess in answer or ratio >= 0.88
+        if correct:
+            self.cancel_game_timer(chat_id)
+            stats, won = await self.award_game_point(chat_id, "whoami", user_id, display_name)
+            if won:
+                return True
+            await self.tg.send(
+                chat_id,
+                f"🎉 {display_name} угадал: {state['answer']}! +1, счёт {stats['session_score']}/10.\n"
+                "Следующий раунд через 3 секунды…",
+            )
+            task = asyncio.create_task(self.start_whoami_round(chat_id, delay=3))
+            self.game_tasks[chat_id] = task
+            return True
+        attempts = self.db.add_whoami_attempt(chat_id)
+        if attempts in {4, 8}:
+            await self.send_whoami_hint(chat_id, automatic=True)
         return True
 
     @staticmethod
