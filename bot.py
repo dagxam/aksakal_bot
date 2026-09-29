@@ -2438,21 +2438,24 @@ class AksakalBot:
             await self.send_command_notice(
                 chat_id,
                 "Команды Аксакала:\n"
-                "/settings — выбрать режим и время кнопками\n"
+                "/settings — настройки бота\n"
                 "/status — текущие настройки\n"
+                "/games — выбрать игру\n"
+                "/crocodile — Крокодил; hint/skip/stop — подсказка/пропуск/стоп\n"
+                "/cities — Города\n"
+                "/hangman — Виселица\n"
+                "/quiz — Викторина\n"
+                "/whoami — Кто я?\n"
+                "/stopgame — закончить текущую игру\n"
+                "/rating — общий вечный рейтинг\n"
+                "/rating week — рейтинг этой недели\n"
+                "/rating crocodile|cities|hangman|quiz|whoami — рейтинг конкретной игры\n"
+                "/mystats — личная игровая статистика и достижения\n"
                 "/roast — подколоть ответом на сообщение\n"
-                "/good — ответом на реплику Аксакала: удачный ответ\n"
-                "/bad — ответом на реплику Аксакала: неудачный ответ\n"
-                "/test — проверить бота\n"
-                "/crocodile — начать игру «Крокодил»\n"
-                "/crocodile hint — дать подсказку\n"
-                "/crocodile stop — закончить игру\n"
-                "/cities — начать игру «Города»\n"
-                "/cities stop — закончить города\n"
-                "/rating — игровой рейтинг группы\n\n"
-                "Можно и без команд: «давай играть в крокодила», «играть в города», "
-                "«покажи рейтинг» или «закончи игру».\n\n"
-                "Быстро вручную: /hardness auto|normal|angry|super, /time 0|3|5|20|40|60|180, /silence 15|30|60|180",
+                "/good, /bad — оценить реплику Аксакала\n"
+                "/test — проверить бота\n\n"
+                "Без команд тоже можно: «давай играть», «играть в города», «покажи рейтинг», "
+                "«моя статистика», «пропусти слово», «закончи игру».",
             )
             return
 
@@ -2463,12 +2466,18 @@ class AksakalBot:
             await self.show_settings(chat_id)
             return
 
+        if cmd in {"/games", "/game", "/игры", "/игра"}:
+            await self.show_game_center(chat_id)
+            return
+
         if cmd in {"/crocodile", "/croc", "/крокодил"}:
             action = arg.lower().strip()
             if action in {"stop", "стоп", "off"}:
                 await self.stop_crocodile_game(chat_id)
             elif action in {"hint", "подсказка", "help"}:
                 await self.send_crocodile_hint(chat_id)
+            elif action in {"skip", "пропустить", "пропусти"}:
+                await self.skip_crocodile_word(chat_id)
             else:
                 await self.start_crocodile_game(chat_id)
             return
@@ -2481,8 +2490,60 @@ class AksakalBot:
                 await self.start_city_game(chat_id)
             return
 
+        if cmd in {"/hangman", "/виселица"}:
+            if arg.lower().strip() in {"stop", "стоп", "off"}:
+                if self.active_game(chat_id) == "hangman":
+                    await self.stop_specific_game(chat_id, "hangman")
+                    await self.tg.send(chat_id, "🔤 Виселица закончена. Возвращаемся к обычному общению.")
+            else:
+                await self.start_hangman_game(chat_id)
+            return
+
+        if cmd in {"/quiz", "/викторина"}:
+            if arg.lower().strip() in {"stop", "стоп", "off"}:
+                if self.active_game(chat_id) == "quiz":
+                    await self.stop_specific_game(chat_id, "quiz")
+                    await self.tg.send(chat_id, "❓ Викторина закончена. Возвращаемся к обычному общению.")
+            else:
+                await self.start_quiz_game(chat_id)
+            return
+
+        if cmd in {"/whoami", "/ктоя"}:
+            action = arg.lower().strip()
+            if action in {"stop", "стоп", "off"}:
+                if self.active_game(chat_id) == "whoami":
+                    await self.stop_specific_game(chat_id, "whoami")
+                    await self.tg.send(chat_id, "🎭 «Кто я?» закончена. Возвращаемся к обычному общению.")
+            elif action in {"hint", "подсказка"}:
+                await self.send_whoami_hint(chat_id)
+            else:
+                await self.start_whoami_game(chat_id)
+            return
+
+        if cmd in {"/stopgame", "/stop_game"}:
+            await self.stop_active_game(chat_id)
+            return
+
         if cmd in {"/rating", "/рейтинг"}:
-            await self.tg.send(chat_id, self.game_rating_text(chat_id))
+            args = [x for x in arg.lower().split() if x]
+            weekly = any(x in {"week", "weekly", "неделя", "недельный", "недельныйрейтинг"} for x in args)
+            aliases = {
+                "crocodile": "crocodile", "croc": "crocodile", "крокодил": "crocodile",
+                "cities": "cities", "city": "cities", "города": "cities",
+                "hangman": "hangman", "виселица": "hangman",
+                "quiz": "quiz", "викторина": "quiz",
+                "whoami": "whoami", "ктоя": "whoami", "кто": "whoami",
+            }
+            game = next((aliases[x] for x in args if x in aliases), None)
+            await self.tg.send(chat_id, self.game_rating_text(chat_id, game=game, weekly=weekly))
+            return
+
+        if cmd in {"/mystats", "/stats", "/моястатистика"}:
+            sender = msg.get("from") or {}
+            display = " ".join(
+                x for x in [sender.get("first_name"), sender.get("last_name")] if x
+            ).strip() or sender.get("username") or str(user_id)
+            await self.tg.send(chat_id, self.player_stats_text(chat_id, user_id, display))
             return
 
         if cmd == "/test":
