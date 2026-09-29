@@ -161,6 +161,114 @@ CREATE TABLE IF NOT EXISTS city_scores (
 
 CREATE INDEX IF NOT EXISTS idx_city_scores_chat
 ON city_scores(chat_id, score DESC, updated_at ASC);
+
+CREATE TABLE IF NOT EXISTS game_sessions (
+    chat_id INTEGER NOT NULL,
+    game TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 0,
+    target_score INTEGER NOT NULL DEFAULT 10,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, game)
+);
+
+CREATE TABLE IF NOT EXISTS game_session_scores (
+    chat_id INTEGER NOT NULL,
+    game TEXT NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    score INTEGER NOT NULL DEFAULT 0,
+    joined_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, game, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_session_scores
+ON game_session_scores(chat_id, game, score DESC, updated_at ASC);
+
+CREATE TABLE IF NOT EXISTS game_stats (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    game TEXT NOT NULL,
+    points INTEGER NOT NULL DEFAULT 0,
+    wins INTEGER NOT NULL DEFAULT 0,
+    correct INTEGER NOT NULL DEFAULT 0,
+    games_played INTEGER NOT NULL DEFAULT 0,
+    streak INTEGER NOT NULL DEFAULT 0,
+    best_streak INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, user_id, game)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_stats_chat
+ON game_stats(chat_id, points DESC, wins DESC);
+
+CREATE TABLE IF NOT EXISTS game_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    game TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    points INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_events_week
+ON game_events(chat_id, created_at DESC, game);
+
+CREATE TABLE IF NOT EXISTS game_achievements (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    code TEXT NOT NULL,
+    title TEXT NOT NULL,
+    unlocked_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, user_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS game_weekly_announcements (
+    chat_id INTEGER NOT NULL,
+    week_key TEXT NOT NULL,
+    announced_at INTEGER NOT NULL,
+    PRIMARY KEY(chat_id, week_key)
+);
+
+CREATE TABLE IF NOT EXISTS hangman_games (
+    chat_id INTEGER PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 0,
+    word TEXT NOT NULL DEFAULT '',
+    hint TEXT NOT NULL DEFAULT '',
+    guessed_letters TEXT NOT NULL DEFAULT '',
+    misses INTEGER NOT NULL DEFAULT 0,
+    round_number INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS quiz_games (
+    chat_id INTEGER PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 0,
+    question_id TEXT NOT NULL DEFAULT '',
+    answer TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '',
+    options TEXT NOT NULL DEFAULT '',
+    round_number INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS whoami_games (
+    chat_id INTEGER PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 0,
+    answer TEXT NOT NULL DEFAULT '',
+    clue_index INTEGER NOT NULL DEFAULT 0,
+    round_number INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -176,6 +284,36 @@ class Database:
                 conn.execute("ALTER TABLE chats ADD COLUMN fixed_hardness INTEGER NOT NULL DEFAULT 3")
             if "response_delay_seconds" not in columns:
                 conn.execute("ALTER TABLE chats ADD COLUMN response_delay_seconds INTEGER NOT NULL DEFAULT 20")
+
+            crocodile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(crocodile_games)").fetchall()}
+            if "skip_used" not in crocodile_columns:
+                conn.execute("ALTER TABLE crocodile_games ADD COLUMN skip_used INTEGER NOT NULL DEFAULT 0")
+            if "difficulty" not in crocodile_columns:
+                conn.execute("ALTER TABLE crocodile_games ADD COLUMN difficulty INTEGER NOT NULL DEFAULT 1")
+            if "fast_rounds" not in crocodile_columns:
+                conn.execute("ALTER TABLE crocodile_games ADD COLUMN fast_rounds INTEGER NOT NULL DEFAULT 0")
+            if "round_started_at" not in crocodile_columns:
+                conn.execute("ALTER TABLE crocodile_games ADD COLUMN round_started_at INTEGER NOT NULL DEFAULT 0")
+
+            # Preserve scores earned before the unified game statistics system.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO game_stats(
+                    chat_id,user_id,display_name,game,points,wins,correct,games_played,streak,best_streak,updated_at
+                )
+                SELECT chat_id,user_id,display_name,'crocodile',score,0,score,0,0,0,updated_at
+                FROM crocodile_scores WHERE score>0
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO game_stats(
+                    chat_id,user_id,display_name,game,points,wins,correct,games_played,streak,best_streak,updated_at
+                )
+                SELECT chat_id,user_id,display_name,'cities',score,0,score,0,0,0,updated_at
+                FROM city_scores WHERE score>0
+                """
+            )
 
             message_columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
             if "reply_to_message_id" not in message_columns:
@@ -563,13 +701,18 @@ class Database:
             conn.execute(
                 """
                 INSERT INTO crocodile_games(
-                    chat_id,active,word,clue_index,round_number,attempts,started_at,updated_at
-                ) VALUES(?,1,'',0,0,0,?,?)
+                    chat_id,active,word,clue_index,round_number,attempts,started_at,updated_at,
+                    skip_used,difficulty,fast_rounds,round_started_at
+                ) VALUES(?,1,'',0,0,0,?,?,0,1,0,0)
                 ON CONFLICT(chat_id) DO UPDATE SET
                     active=1,
                     word='',
                     clue_index=0,
                     attempts=0,
+                    skip_used=0,
+                    difficulty=1,
+                    fast_rounds=0,
+                    round_started_at=0,
                     started_at=excluded.started_at,
                     updated_at=excluded.updated_at
                 """,
@@ -582,11 +725,11 @@ class Database:
             conn.execute(
                 """
                 UPDATE crocodile_games
-                SET word=?, clue_index=0, attempts=0,
-                    round_number=round_number+1, updated_at=?
+                SET word=?, clue_index=0, attempts=0, skip_used=0,
+                    round_number=round_number+1, round_started_at=?, updated_at=?
                 WHERE chat_id=? AND active=1
                 """,
-                (word, now, chat_id),
+                (word, now, now, chat_id),
             )
 
     def clear_crocodile_round(self, chat_id: int):
@@ -599,6 +742,45 @@ class Database:
                 """,
                 (int(time.time()), chat_id),
             )
+
+    def use_crocodile_skip(self, chat_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT skip_used FROM crocodile_games WHERE chat_id=? AND active=1",
+                (chat_id,),
+            ).fetchone()
+            if not row or int(row["skip_used"] or 0):
+                return False
+            conn.execute(
+                "UPDATE crocodile_games SET skip_used=1,updated_at=? WHERE chat_id=?",
+                (int(time.time()), chat_id),
+            )
+            return True
+
+    def update_crocodile_difficulty(self, chat_id: int, fast: bool) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT difficulty,fast_rounds FROM crocodile_games WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+            if not row:
+                return 1
+            difficulty = max(1, min(3, int(row["difficulty"] or 1)))
+            fast_rounds = int(row["fast_rounds"] or 0)
+            if fast:
+                fast_rounds += 1
+                if fast_rounds >= 2 and difficulty < 3:
+                    difficulty += 1
+                    fast_rounds = 0
+            else:
+                if difficulty > 1:
+                    difficulty -= 1
+                fast_rounds = 0
+            conn.execute(
+                "UPDATE crocodile_games SET difficulty=?,fast_rounds=?,updated_at=? WHERE chat_id=?",
+                (difficulty, fast_rounds, int(time.time()), chat_id),
+            )
+        return difficulty
 
     def stop_crocodile_game(self, chat_id: int):
         with self.connect() as conn:
@@ -762,6 +944,401 @@ class Database:
                 (chat_id, limit),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+    def start_game_session(self, chat_id: int, game: str, target_score: int = 10, reset: bool = True):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO game_sessions(chat_id,game,active,target_score,started_at,updated_at)
+                VALUES(?,?,1,?,?,?)
+                ON CONFLICT(chat_id,game) DO UPDATE SET
+                    active=1,
+                    target_score=excluded.target_score,
+                    started_at=CASE WHEN ? THEN excluded.started_at ELSE game_sessions.started_at END,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, game, target_score, now, now, 1 if reset else 0),
+            )
+            if reset:
+                conn.execute(
+                    "DELETE FROM game_session_scores WHERE chat_id=? AND game=?",
+                    (chat_id, game),
+                )
+
+    def get_game_session(self, chat_id: int, game: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM game_sessions WHERE chat_id=? AND game=?",
+                (chat_id, game),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def end_game_session(self, chat_id: int, game: str):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE game_sessions SET active=0,updated_at=? WHERE chat_id=? AND game=?",
+                (int(time.time()), chat_id, game),
+            )
+
+    def touch_game_participant(self, chat_id: int, game: str, user_id: int, display_name: str):
+        now = int(time.time())
+        with self.connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM game_session_scores WHERE chat_id=? AND game=? AND user_id=?",
+                (chat_id, game, user_id),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO game_session_scores(chat_id,game,user_id,display_name,score,joined_at,updated_at)
+                VALUES(?,?,?,?,0,?,?)
+                ON CONFLICT(chat_id,game,user_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, game, user_id, display_name[:120], now, now),
+            )
+            if not exists:
+                conn.execute(
+                    """
+                    INSERT INTO game_stats(
+                        chat_id,user_id,display_name,game,points,wins,correct,games_played,streak,best_streak,updated_at
+                    ) VALUES(?,?,?,?,0,0,0,1,0,0,?)
+                    ON CONFLICT(chat_id,user_id,game) DO UPDATE SET
+                        display_name=excluded.display_name,
+                        games_played=game_stats.games_played+1,
+                        updated_at=excluded.updated_at
+                    """,
+                    (chat_id, user_id, display_name[:120], game, now),
+                )
+
+    def award_game_point(
+        self,
+        chat_id: int,
+        game: str,
+        user_id: int,
+        display_name: str,
+        points: int = 1,
+    ) -> dict[str, Any]:
+        self.touch_game_participant(chat_id, game, user_id, display_name)
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE game_stats SET streak=0 WHERE chat_id=? AND game=? AND user_id!=?",
+                (chat_id, game, user_id),
+            )
+            conn.execute(
+                """
+                UPDATE game_session_scores
+                SET score=score+?, display_name=?, updated_at=?
+                WHERE chat_id=? AND game=? AND user_id=?
+                """,
+                (points, display_name[:120], now, chat_id, game, user_id),
+            )
+            conn.execute(
+                """
+                UPDATE game_stats
+                SET display_name=?,
+                    points=points+?,
+                    correct=correct+?,
+                    streak=streak+1,
+                    best_streak=MAX(best_streak, streak+1),
+                    updated_at=?
+                WHERE chat_id=? AND user_id=? AND game=?
+                """,
+                (display_name[:120], points, points, now, chat_id, user_id, game),
+            )
+            conn.execute(
+                """
+                INSERT INTO game_events(chat_id,user_id,display_name,game,event_type,points,created_at)
+                VALUES(?,?,?,?,?,?,?)
+                """,
+                (chat_id, user_id, display_name[:120], game, "point", points, now),
+            )
+            score_row = conn.execute(
+                "SELECT score FROM game_session_scores WHERE chat_id=? AND game=? AND user_id=?",
+                (chat_id, game, user_id),
+            ).fetchone()
+            stat_row = conn.execute(
+                """
+                SELECT points,wins,correct,games_played,streak,best_streak
+                FROM game_stats WHERE chat_id=? AND user_id=? AND game=?
+                """,
+                (chat_id, user_id, game),
+            ).fetchone()
+            session_row = conn.execute(
+                "SELECT target_score FROM game_sessions WHERE chat_id=? AND game=?",
+                (chat_id, game),
+            ).fetchone()
+
+        session_score = int(score_row["score"] or 0) if score_row else points
+        target = int(session_row["target_score"] or 10) if session_row else 10
+        result = dict(stat_row) if stat_row else {}
+        result.update({"session_score": session_score, "target_score": target, "won": session_score >= target})
+        return result
+
+    def register_game_session_win(self, chat_id: int, game: str, user_id: int, display_name: str) -> dict[str, Any]:
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE game_stats
+                SET wins=wins+1, display_name=?, updated_at=?
+                WHERE chat_id=? AND user_id=? AND game=?
+                """,
+                (display_name[:120], now, chat_id, user_id, game),
+            )
+            conn.execute(
+                """
+                INSERT INTO game_events(chat_id,user_id,display_name,game,event_type,points,created_at)
+                VALUES(?,?,?,?,?,0,?)
+                """,
+                (chat_id, user_id, display_name[:120], game, "session_win", now),
+            )
+            conn.execute(
+                "UPDATE game_sessions SET active=0,updated_at=? WHERE chat_id=? AND game=?",
+                (now, chat_id, game),
+            )
+            row = conn.execute(
+                """
+                SELECT points,wins,correct,games_played,streak,best_streak
+                FROM game_stats WHERE chat_id=? AND user_id=? AND game=?
+                """,
+                (chat_id, user_id, game),
+            ).fetchone()
+        return dict(row) if row else {}
+
+    def game_session_top(self, chat_id: int, game: str, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id,display_name,score
+                FROM game_session_scores
+                WHERE chat_id=? AND game=?
+                ORDER BY score DESC, updated_at ASC
+                LIMIT ?
+                """,
+                (chat_id, game, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def game_rating(self, chat_id: int, game: str | None = None, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            if game:
+                rows = conn.execute(
+                    """
+                    SELECT user_id,MAX(display_name) AS display_name,
+                           SUM(points) AS points,SUM(wins) AS wins,SUM(correct) AS correct
+                    FROM game_stats
+                    WHERE chat_id=? AND game=?
+                    GROUP BY user_id
+                    HAVING SUM(points)>0 OR SUM(wins)>0
+                    ORDER BY points DESC,wins DESC,correct DESC
+                    LIMIT ?
+                    """,
+                    (chat_id, game, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT user_id,MAX(display_name) AS display_name,
+                           SUM(points) AS points,SUM(wins) AS wins,SUM(correct) AS correct
+                    FROM game_stats
+                    WHERE chat_id=?
+                    GROUP BY user_id
+                    HAVING SUM(points)>0 OR SUM(wins)>0
+                    ORDER BY points DESC,wins DESC,correct DESC
+                    LIMIT ?
+                    """,
+                    (chat_id, limit),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
+    def weekly_game_rating(
+        self,
+        chat_id: int,
+        since_ts: int,
+        until_ts: int | None = None,
+        game: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        params: list[Any] = [chat_id, since_ts]
+        conditions = ["chat_id=?", "created_at>=?", "event_type='point'"]
+        if until_ts is not None:
+            conditions.append("created_at<?")
+            params.append(until_ts)
+        if game:
+            conditions.append("game=?")
+            params.append(game)
+        params.append(limit)
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT user_id,MAX(display_name) AS display_name,SUM(points) AS points
+                FROM game_events
+                WHERE {' AND '.join(conditions)}
+                GROUP BY user_id
+                HAVING SUM(points)>0
+                ORDER BY points DESC,MAX(created_at) ASC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def player_game_stats(self, chat_id: int, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT game,display_name,points,wins,correct,games_played,streak,best_streak
+                FROM game_stats
+                WHERE chat_id=? AND user_id=?
+                ORDER BY points DESC, game ASC
+                """,
+                (chat_id, user_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def unlock_achievement(self, chat_id: int, user_id: int, code: str, title: str) -> bool:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO game_achievements(chat_id,user_id,code,title,unlocked_at)
+                VALUES(?,?,?,?,?)
+                """,
+                (chat_id, user_id, code, title, int(time.time())),
+            )
+            return cur.rowcount > 0
+
+    def player_achievements(self, chat_id: int, user_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT code,title,unlocked_at
+                FROM game_achievements
+                WHERE chat_id=? AND user_id=?
+                ORDER BY unlocked_at DESC
+                """,
+                (chat_id, user_id),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def weekly_announcement_done(self, chat_id: int, week_key: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM game_weekly_announcements WHERE chat_id=? AND week_key=?",
+                (chat_id, week_key),
+            ).fetchone()
+        return bool(row)
+
+    def mark_weekly_announcement(self, chat_id: int, week_key: str):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO game_weekly_announcements(chat_id,week_key,announced_at)
+                VALUES(?,?,?)
+                """,
+                (chat_id, week_key, int(time.time())),
+            )
+
+    def get_hangman_game(self, chat_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM hangman_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_hangman_round(self, chat_id: int, word: str, hint: str, active: bool = True):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO hangman_games(chat_id,active,word,hint,guessed_letters,misses,round_number,started_at,updated_at)
+                VALUES(?,?,?,?, '',0,1,?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    active=excluded.active,word=excluded.word,hint=excluded.hint,
+                    guessed_letters='',misses=0,round_number=hangman_games.round_number+1,
+                    started_at=excluded.started_at,updated_at=excluded.updated_at
+                """,
+                (chat_id, 1 if active else 0, word, hint, now, now),
+            )
+
+    def update_hangman_game(self, chat_id: int, guessed_letters: str, misses: int):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE hangman_games SET guessed_letters=?,misses=?,updated_at=? WHERE chat_id=?",
+                (guessed_letters, misses, int(time.time()), chat_id),
+            )
+
+    def stop_hangman_game(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute("UPDATE hangman_games SET active=0,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
+
+    def get_quiz_game(self, chat_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM quiz_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_quiz_round(self, chat_id: int, question_id: str, answer: str, question: str, options: str):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO quiz_games(chat_id,active,question_id,answer,question,options,round_number,attempts,started_at,updated_at)
+                VALUES(?,1,?,?,?,?,1,0,?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    active=1,question_id=excluded.question_id,answer=excluded.answer,
+                    question=excluded.question,options=excluded.options,
+                    round_number=quiz_games.round_number+1,attempts=0,
+                    started_at=excluded.started_at,updated_at=excluded.updated_at
+                """,
+                (chat_id, question_id, answer, question, options, now, now),
+            )
+
+    def add_quiz_attempt(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            conn.execute("UPDATE quiz_games SET attempts=attempts+1,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
+            row = conn.execute("SELECT attempts FROM quiz_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return int(row["attempts"] or 0) if row else 0
+
+    def stop_quiz_game(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute("UPDATE quiz_games SET active=0,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
+
+    def get_whoami_game(self, chat_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM whoami_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_whoami_round(self, chat_id: int, answer: str):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO whoami_games(chat_id,active,answer,clue_index,round_number,attempts,started_at,updated_at)
+                VALUES(?,1,?,0,1,0,?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    active=1,answer=excluded.answer,clue_index=0,
+                    round_number=whoami_games.round_number+1,attempts=0,
+                    started_at=excluded.started_at,updated_at=excluded.updated_at
+                """,
+                (chat_id, answer, now, now),
+            )
+
+    def advance_whoami_clue(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            conn.execute("UPDATE whoami_games SET clue_index=clue_index+1,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
+            row = conn.execute("SELECT clue_index FROM whoami_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return int(row["clue_index"] or 0) if row else 0
+
+    def add_whoami_attempt(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            conn.execute("UPDATE whoami_games SET attempts=attempts+1,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
+            row = conn.execute("SELECT attempts FROM whoami_games WHERE chat_id=?", (chat_id,)).fetchone()
+        return int(row["attempts"] or 0) if row else 0
+
+    def stop_whoami_game(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute("UPDATE whoami_games SET active=0,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
 
 
     def recent_humor_styles(self, chat_id: int, user_id: int, limit: int = 5) -> list[str]:
