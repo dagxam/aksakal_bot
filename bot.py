@@ -1995,6 +1995,7 @@ class AksakalBot:
             game = self.db.get_hangman_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
+            self.db.clear_hangman_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
             await self.start_hangman_round(chat_id, delay=2)
@@ -2011,7 +2012,7 @@ class AksakalBot:
         import re
         guess = self.normalize_crocodile_guess(text).replace("-", "")
         word = self.normalize_crocodile_guess(str(game["word"])).replace("-", "")
-        if not guess:
+        if not guess or not word:
             return True
 
         letters_only = re.sub(r"[^а-яa-z]", "", guess)
@@ -2041,12 +2042,14 @@ class AksakalBot:
         self.db.update_hangman_game(chat_id, letters, misses)
         if solved:
             self.cancel_game_timer(chat_id)
+            solved_word = str(game["word"])
+            self.db.clear_hangman_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "hangman", user_id, display_name)
             if won:
                 return True
             await self.tg.send(
                 chat_id,
-                f"🎉 {display_name} завершил слово «{game['word']}»! +1, счёт {stats['session_score']}/10.\n"
+                f"🎉 {display_name} завершил слово «{solved_word}»! +1, счёт {stats['session_score']}/10.\n"
                 "Следующее слово через 3 секунды…",
             )
             task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
@@ -2055,7 +2058,9 @@ class AksakalBot:
 
         if misses >= 6:
             self.cancel_game_timer(chat_id)
-            await self.tg.send(chat_id, f"💀 Шесть ошибок. Слово было: {game['word']}. Следующее через 3 секунды…")
+            missed_word = str(game["word"])
+            self.db.clear_hangman_round(chat_id)
+            await self.tg.send(chat_id, f"💀 Шесть ошибок. Слово было: {missed_word}. Следующее через 3 секунды…")
             task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
             self.game_tasks[chat_id] = task
             return True
@@ -2126,8 +2131,10 @@ class AksakalBot:
             state = self.db.get_quiz_game(chat_id)
             if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
                 return
+            answer = str(state["answer"])
+            self.db.clear_quiz_round(chat_id)
             if self.tg:
-                await self.tg.send(chat_id, f"⌛ Правильный ответ: {state['answer']}. Следующий вопрос…")
+                await self.tg.send(chat_id, f"⌛ Правильный ответ: {answer}. Следующий вопрос…")
             await self.start_quiz_round(chat_id, delay=2)
         except asyncio.CancelledError:
             return
@@ -2137,6 +2144,8 @@ class AksakalBot:
         if not state or not state.get("active"):
             return False
         if kind != "message" or not text.strip():
+            return True
+        if not state.get("question_id") or not state.get("answer"):
             return True
         options = str(state.get("options") or "").splitlines()
         raw = self.normalize_crocodile_guess(text)
@@ -2158,6 +2167,7 @@ class AksakalBot:
         answer = str(state.get("answer") or "")
         if self.normalize_crocodile_guess(selected) == self.normalize_crocodile_guess(answer):
             self.cancel_game_timer(chat_id)
+            self.db.clear_quiz_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "quiz", user_id, display_name)
             if won:
                 return True
@@ -2243,6 +2253,7 @@ class AksakalBot:
             state = self.db.get_whoami_game(chat_id)
             if not state or not state.get("active") or str(state.get("answer") or "") != answer:
                 return
+            self.db.clear_whoami_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Ответ: {answer}. Следующий раунд…")
             await self.start_whoami_round(chat_id, delay=2)
@@ -2258,7 +2269,7 @@ class AksakalBot:
 
         guess = self.normalize_crocodile_guess(text)
         answer = self.normalize_crocodile_guess(str(state.get("answer") or ""))
-        if not guess:
+        if not guess or not answer:
             return True
         self.db.touch_game_participant(chat_id, "whoami", user_id, display_name)
         ratio = difflib.SequenceMatcher(None, guess, answer).ratio()
@@ -2269,12 +2280,14 @@ class AksakalBot:
         )
         if correct:
             self.cancel_game_timer(chat_id)
+            solved_answer = str(state["answer"])
+            self.db.clear_whoami_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "whoami", user_id, display_name)
             if won:
                 return True
             await self.tg.send(
                 chat_id,
-                f"🎉 {display_name} угадал: {state['answer']}! +1, счёт {stats['session_score']}/10.\n"
+                f"🎉 {display_name} угадал: {solved_answer}! +1, счёт {stats['session_score']}/10.\n"
                 "Следующий раунд через 3 секунды…",
             )
             task = asyncio.create_task(self.start_whoami_round(chat_id, delay=3))
