@@ -283,6 +283,56 @@ jobs:
           print("command cleanup/free AI wiring smoke test OK")
           PY
 
+      - name: Crocodile game smoke test
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+          from bot import AksakalBot
+          from db import Database
+
+          assert len(AksakalBot.CROCODILE_WORDS) >= 30
+          assert AksakalBot.normalize_crocodile_guess("САМОЛЁТ!!!") == "самолет"
+          keyboard = AksakalBot.crocodile_keyboard()
+          callbacks = [
+              button["callback_data"]
+              for row in keyboard["inline_keyboard"]
+              for button in row
+          ]
+          assert "set:croc:hint" in callbacks
+          assert "set:croc:stop" in callbacks
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              db.ensure_chat(-100777, "Игра", 3, 10, 180)
+              db.start_crocodile_game(-100777)
+              game = db.get_crocodile_game(-100777)
+              assert game and game["active"] == 1
+
+              db.set_crocodile_round(-100777, "арбуз")
+              game = db.get_crocodile_game(-100777)
+              assert game["word"] == "арбуз"
+              assert game["round_number"] == 1
+              assert db.register_crocodile_attempt(-100777) == 1
+              assert db.advance_crocodile_clue(-100777) == 1
+
+              assert db.add_crocodile_score(-100777, 42, "Магомед") == 1
+              assert db.add_crocodile_score(-100777, 42, "Магомед") == 2
+              top = db.crocodile_top(-100777)
+              assert top[0]["user_id"] == 42 and top[0]["score"] == 2
+
+              db.stop_crocodile_game(-100777)
+              assert db.get_crocodile_game(-100777)["active"] == 0
+          finally:
+              try:
+                  os.remove(path)
+              except FileNotFoundError:
+                  pass
+          print("Crocodile game smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
