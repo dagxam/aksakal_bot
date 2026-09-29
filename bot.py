@@ -743,15 +743,6 @@ class AksakalBot:
             reply_to_user_id=reply_to_user_id,
         )
 
-        if kind == "message" and text and not text.startswith("/"):
-            self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
-            feedback = self.detect_address_feedback(text)
-            if feedback:
-                if feedback["profile"]:
-                    self.db.set_profile(chat_id, user_id, feedback["profile"])
-                for token in feedback["avoid"]:
-                    self.db.avoid_address(chat_id, user_id, token)
-
         if text.startswith("/"):
             old_task = self.pending_reply_tasks.pop(chat_id, None)
             if old_task and not old_task.done():
@@ -761,8 +752,19 @@ class AksakalBot:
             await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
             return
 
+        # Во время игры варианты ответов не попадают в обучаемый словарь Аксакала
+        # и не запускают его обычные автоответы.
         if await self.handle_crocodile_guess(chat_id, user_id, display, text, kind):
             return
+
+        if kind == "message" and text:
+            self.db.learn_tokens(chat_id, user_id, self.extract_learning_tokens(text))
+            feedback = self.detect_address_feedback(text)
+            if feedback:
+                if feedback["profile"]:
+                    self.db.set_profile(chat_id, user_id, feedback["profile"])
+                for token in feedback["avoid"]:
+                    self.db.avoid_address(chat_id, user_id, token)
 
         await self.maybe_emotional_response(chat_id, msg)
 
