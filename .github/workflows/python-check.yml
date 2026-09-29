@@ -399,6 +399,7 @@ jobs:
           assert AksakalBot.detect_game_request("давай сыграем кто я") == "whoami"
           assert AksakalBot.detect_game_request("пропусти слово") == "skip"
           assert AksakalBot.detect_game_request("моя статистика") == "mystats"
+          assert AksakalBot.detect_game_request("рейтинг недели") == "rating_week"
 
           kb = AksakalBot.game_center_keyboard()
           callbacks = [
@@ -412,8 +413,26 @@ jobs:
               "set:game:hangman",
               "set:game:quiz",
               "set:game:whoami",
+              "set:game:rating",
+              "set:game:mystats",
           ):
               assert expected in callbacks
+
+          rating_callbacks = [
+              b["callback_data"]
+              for row in AksakalBot.rating_keyboard()["inline_keyboard"]
+              for b in row
+          ]
+          for expected in (
+              "set:rating:all",
+              "set:rating:week",
+              "set:rating:croc",
+              "set:rating:cities",
+              "set:rating:hangman",
+              "set:rating:quiz",
+              "set:rating:whoami",
+          ):
+              assert expected in rating_callbacks
 
           assert len(AksakalBot.CROCODILE_WORDS) >= 60
           assert set(AksakalBot.CROCODILE_LEVELS) == {1, 2, 3}
@@ -471,14 +490,20 @@ jobs:
               assert db.get_hangman_game(chat_id)["active"] == 1
               db.update_hangman_game(chat_id, "оа", 1)
               assert db.get_hangman_game(chat_id)["misses"] == 1
+              db.clear_hangman_round(chat_id)
+              assert db.get_hangman_game(chat_id)["word"] == ""
 
               db.set_quiz_round(chat_id, "q1", "7", "Сколько?", "5\n6\n7\n8")
               assert db.get_quiz_game(chat_id)["answer"] == "7"
               assert db.add_quiz_attempt(chat_id) == 1
+              db.clear_quiz_round(chat_id)
+              assert db.get_quiz_game(chat_id)["answer"] == ""
 
               db.set_whoami_round(chat_id, "Юрий Гагарин")
               assert db.get_whoami_game(chat_id)["answer"] == "Юрий Гагарин"
               assert db.advance_whoami_clue(chat_id) == 1
+              db.clear_whoami_round(chat_id)
+              assert db.get_whoami_game(chat_id)["answer"] == ""
 
               assert db.unlock_achievement(chat_id, 1, "test", "Тест") is True
               assert db.unlock_achievement(chat_id, 1, "test", "Тест") is False
