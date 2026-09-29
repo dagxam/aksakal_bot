@@ -115,6 +115,29 @@ CREATE TABLE IF NOT EXISTS response_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_response_feedback_message
 ON response_feedback(chat_id, bot_message_id);
+
+CREATE TABLE IF NOT EXISTS crocodile_games (
+    chat_id INTEGER PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 0,
+    word TEXT NOT NULL DEFAULT '',
+    clue_index INTEGER NOT NULL DEFAULT 0,
+    round_number INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS crocodile_scores (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    score INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_crocodile_scores_chat
+ON crocodile_scores(chat_id, score DESC, updated_at ASC);
 """
 
 
@@ -502,6 +525,135 @@ class Database:
                 (chat_id,),
             ).fetchone()
         return {"signals": int(row["signals"] or 0), "score": int(row["score"] or 0)}
+
+    def get_crocodile_game(self, chat_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM crocodile_games WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def start_crocodile_game(self, chat_id: int):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO crocodile_games(
+                    chat_id,active,word,clue_index,round_number,attempts,started_at,updated_at
+                ) VALUES(?,1,'',0,0,0,?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    active=1,
+                    word='',
+                    clue_index=0,
+                    attempts=0,
+                    started_at=excluded.started_at,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, now, now),
+            )
+
+    def set_crocodile_round(self, chat_id: int, word: str):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE crocodile_games
+                SET word=?, clue_index=0, attempts=0,
+                    round_number=round_number+1, updated_at=?
+                WHERE chat_id=? AND active=1
+                """,
+                (word, now, chat_id),
+            )
+
+    def clear_crocodile_round(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE crocodile_games
+                SET word='', clue_index=0, attempts=0, updated_at=?
+                WHERE chat_id=? AND active=1
+                """,
+                (int(time.time()), chat_id),
+            )
+
+    def stop_crocodile_game(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE crocodile_games
+                SET active=0, word='', clue_index=0, attempts=0, updated_at=?
+                WHERE chat_id=?
+                """,
+                (int(time.time()), chat_id),
+            )
+
+    def register_crocodile_attempt(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE crocodile_games
+                SET attempts=attempts+1, updated_at=?
+                WHERE chat_id=? AND active=1
+                """,
+                (int(time.time()), chat_id),
+            )
+            row = conn.execute(
+                "SELECT attempts FROM crocodile_games WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return int(row["attempts"] or 0) if row else 0
+
+    def advance_crocodile_clue(self, chat_id: int) -> int:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE crocodile_games
+                SET clue_index=clue_index+1, updated_at=?
+                WHERE chat_id=? AND active=1
+                """,
+                (int(time.time()), chat_id),
+            )
+            row = conn.execute(
+                "SELECT clue_index FROM crocodile_games WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return int(row["clue_index"] or 0) if row else 0
+
+    def add_crocodile_score(self, chat_id: int, user_id: int, display_name: str, points: int = 1) -> int:
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO crocodile_scores(chat_id,user_id,display_name,score,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    score=crocodile_scores.score+excluded.score,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, user_id, display_name[:120], points, now),
+            )
+            row = conn.execute(
+                "SELECT score FROM crocodile_scores WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        return int(row["score"] or 0) if row else 0
+
+    def crocodile_top(self, chat_id: int, limit: int = 5) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id,display_name,score
+                FROM crocodile_scores
+                WHERE chat_id=? AND score>0
+                ORDER BY score DESC, updated_at ASC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
 
     def recent_humor_styles(self, chat_id: int, user_id: int, limit: int = 5) -> list[str]:
         with self.connect() as conn:
