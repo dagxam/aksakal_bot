@@ -1269,6 +1269,13 @@ class Database:
                 (guessed_letters, misses, int(time.time()), chat_id),
             )
 
+    def clear_hangman_round(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE hangman_games SET word='',hint='',guessed_letters='',misses=0,updated_at=? WHERE chat_id=? AND active=1",
+                (int(time.time()), chat_id),
+            )
+
     def stop_hangman_game(self, chat_id: int):
         with self.connect() as conn:
             conn.execute("UPDATE hangman_games SET active=0,updated_at=? WHERE chat_id=?", (int(time.time()), chat_id))
@@ -1292,6 +1299,13 @@ class Database:
                     started_at=excluded.started_at,updated_at=excluded.updated_at
                 """,
                 (chat_id, question_id, answer, question, options, now, now),
+            )
+
+    def clear_quiz_round(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE quiz_games SET question_id='',answer='',question='',options='',attempts=0,updated_at=? WHERE chat_id=? AND active=1",
+                (int(time.time()), chat_id),
             )
 
     def add_quiz_attempt(self, chat_id: int) -> int:
@@ -1322,6 +1336,13 @@ class Database:
                     started_at=excluded.started_at,updated_at=excluded.updated_at
                 """,
                 (chat_id, answer, now, now),
+            )
+
+    def clear_whoami_round(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE whoami_games SET answer='',clue_index=0,attempts=0,updated_at=? WHERE chat_id=? AND active=1",
+                (int(time.time()), chat_id),
             )
 
     def advance_whoami_clue(self, chat_id: int) -> int:
