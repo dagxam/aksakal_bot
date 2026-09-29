@@ -343,8 +343,12 @@ jobs:
 
           assert AksakalBot.detect_game_request("давай играть в крокодила") == "crocodile"
           assert AksakalBot.detect_game_request("давайте сыграем в города") == "cities"
+          assert AksakalBot.detect_game_request("играть в города") == "cities"
+          assert AksakalBot.detect_game_request("может играть в города") == "cities"
           assert AksakalBot.detect_game_request("rating") == "rating"
           assert AksakalBot.detect_game_request("покажи рейтинг") == "rating"
+          assert AksakalBot.detect_game_request("закончи игру") == "stop"
+          assert AksakalBot.detect_game_request("хватит играть") == "stop"
           assert AksakalBot.city_last_letter("Астрахань") == "н"
           assert AksakalBot.city_last_letter("Тверь") == "р"
           assert len(AksakalBot.CITY_NAMES) >= 100
