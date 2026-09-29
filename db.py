@@ -138,6 +138,29 @@ CREATE TABLE IF NOT EXISTS crocodile_scores (
 
 CREATE INDEX IF NOT EXISTS idx_crocodile_scores_chat
 ON crocodile_scores(chat_id, score DESC, updated_at ASC);
+
+CREATE TABLE IF NOT EXISTS city_games (
+    chat_id INTEGER PRIMARY KEY,
+    active INTEGER NOT NULL DEFAULT 0,
+    current_city TEXT NOT NULL DEFAULT '',
+    required_letter TEXT NOT NULL DEFAULT '',
+    used_cities TEXT NOT NULL DEFAULT '',
+    round_number INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS city_scores (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL DEFAULT '',
+    score INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_city_scores_chat
+ON city_scores(chat_id, score DESC, updated_at ASC);
 """
 
 
@@ -646,6 +669,92 @@ class Database:
                 """
                 SELECT user_id,display_name,score
                 FROM crocodile_scores
+                WHERE chat_id=? AND score>0
+                ORDER BY score DESC, updated_at ASC
+                LIMIT ?
+                """,
+                (chat_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+
+    def get_city_game(self, chat_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM city_games WHERE chat_id=?",
+                (chat_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def start_city_game(self, chat_id: int, city: str, required_letter: str):
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO city_games(
+                    chat_id,active,current_city,required_letter,used_cities,round_number,started_at,updated_at
+                ) VALUES(?,1,?,?,?,1,?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    active=1,
+                    current_city=excluded.current_city,
+                    required_letter=excluded.required_letter,
+                    used_cities=excluded.used_cities,
+                    round_number=1,
+                    started_at=excluded.started_at,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, city, required_letter, city.lower(), now, now),
+            )
+
+    def update_city_game(self, chat_id: int, city: str, required_letter: str, used_cities: list[str]):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE city_games
+                SET current_city=?, required_letter=?, used_cities=?,
+                    round_number=round_number+1, updated_at=?
+                WHERE chat_id=? AND active=1
+                """,
+                (city, required_letter, "\n".join(used_cities), int(time.time()), chat_id),
+            )
+
+    def stop_city_game(self, chat_id: int):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE city_games
+                SET active=0, updated_at=?
+                WHERE chat_id=?
+                """,
+                (int(time.time()), chat_id),
+            )
+
+    def add_city_score(self, chat_id: int, user_id: int, display_name: str, points: int = 1) -> int:
+        now = int(time.time())
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO city_scores(chat_id,user_id,display_name,score,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    score=city_scores.score+excluded.score,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, user_id, display_name[:120], points, now),
+            )
+            row = conn.execute(
+                "SELECT score FROM city_scores WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        return int(row["score"] or 0) if row else 0
+
+    def city_top(self, chat_id: int, limit: int = 10) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id,display_name,score
+                FROM city_scores
                 WHERE chat_id=? AND score>0
                 ORDER BY score DESC, updated_at ASC
                 LIMIT ?
