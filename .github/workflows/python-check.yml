@@ -251,7 +251,9 @@ jobs:
               for button in row
           ]
           assert "set:time:0" in callbacks
-          assert "set:silence:30" in callbacks
+          assert "set:bot:on" in callbacks
+          assert "set:bot:off" in callbacks
+          assert not any(x.startswith("set:silence:") for x in callbacks)
           assert "✅ ⚡ Сразу" in [
               button["text"]
               for row in kb["inline_keyboard"]
