@@ -304,6 +304,8 @@ jobs:
           from bot import AksakalBot
           from db import Database
 
+          from generator import PhraseGenerator
+
           assert len(AksakalBot.CROCODILE_WORDS) >= 30
           assert AksakalBot.normalize_crocodile_guess("САМОЛЁТ!!!") == "самолет"
           keyboard = AksakalBot.crocodile_keyboard()
@@ -540,8 +542,18 @@ jobs:
           from db import Database
 
           assert AksakalBot.detect_address_feedback("я девушка")["profile"] == "female"
+          assert AksakalBot.detect_address_feedback("я сестра")["profile"] == "female"
           assert AksakalBot.detect_address_feedback("я устала сегодня")["profile"] == "female"
+          assert AksakalBot.detect_address_feedback("я брат")["profile"] == "male"
           assert AksakalBot.detect_address_feedback("я был там вчера")["profile"] == "male"
+
+          assert PhraseGenerator.address_profile_violation("Брат, послушай.", "neutral") != ""
+          assert PhraseGenerator.address_profile_violation("Сестра, сабур.", "neutral") != ""
+          assert PhraseGenerator.address_profile_violation("Брат, послушай.", "female") != ""
+          assert PhraseGenerator.address_profile_violation("Сестра, сабур.", "male") != ""
+          assert PhraseGenerator.address_profile_violation("Молодой, не спеши.", "male") == ""
+          assert PhraseGenerator.address_profile_violation("Девушка, не спеши.", "female") == ""
+          assert PhraseGenerator.address_profile_violation("Твой брат уже пришёл.", "neutral") == ""
           assert AksakalBot.detect_address_feedback("не называй меня брат")["profile"] is None
           assert "брат" in AksakalBot.detect_address_feedback("не называй меня брат")["avoid"]
 
