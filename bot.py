@@ -747,11 +747,19 @@ class AksakalBot:
         if not low:
             return None
 
+        # Пол запоминаем только по достаточно сильным самоописаниям самого человека.
+        # Имя, username, фото и стереотипы для этого никогда не используем.
         explicit_female = [
             r"\bя\s+(?:девушка|женщина)\b",
+            r"\bя\s+(?:была|сделала|сказала|пошла|пришла|устала|готова|родилась|выросла)\b",
+            r"\bя\s+(?:замужем|вышла\s+замуж)\b",
+            r"\bмне\s+как\s+(?:девушке|женщине)\b",
         ]
         explicit_male = [
             r"\bя\s+(?:парень|мужчина)\b",
+            r"\bя\s+(?:был|сделал|сказал|пошел|пошёл|пришел|пришёл|устал|готов|родился|вырос)\b",
+            r"\bя\s+женат\b",
+            r"\bмне\s+как\s+(?:парню|мужчине)\b",
         ]
         if any(re.search(p, low) for p in explicit_female):
             return {"profile": "female", "avoid": [], "explicit": True}
@@ -759,8 +767,8 @@ class AksakalBot:
             return {"profile": "male", "avoid": [], "explicit": True}
 
         address_tokens = {
-            "вацок": "male", "уцы": "male", "брат": "male",
-            "тетка": "female", "теткой": "female", "сестра": "female",
+            "вацок": "male", "уцы": "male", "брат": "male", "молодой": "male", "парень": "male",
+            "тетка": "female", "теткой": "female", "сестра": "female", "девушка": "female", "молодая": "female",
             "ле": "neutral", "йо": "neutral",
         }
         denied = []
