@@ -828,6 +828,19 @@ class AksakalBot:
             "keyboard": [
                 [{"text": "📋 Мои группы"}],
                 [
+                    {
+                        "text": "🔎 Выбрать группу в Telegram",
+                        "request_chat": {
+                            "request_id": 7001,
+                            "chat_is_channel": False,
+                            "bot_is_member": True,
+                            "request_title": True,
+                            "request_username": True,
+                            "request_photo": False,
+                        },
+                    }
+                ],
+                [
                     {"text": "🛑 Остановить в группе"},
                     {"text": "▶️ Запустить в группе"},
                 ],
@@ -838,6 +851,29 @@ class AksakalBot:
             ],
             "resize_keyboard": True,
             "is_persistent": True,
+        }
+
+    @staticmethod
+    def private_group_request_keyboard(request_id: int = 7001) -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [
+                    {
+                        "text": "🔎 Выбрать уже добавленную группу",
+                        "request_chat": {
+                            "request_id": request_id,
+                            "chat_is_channel": False,
+                            "bot_is_member": True,
+                            "request_title": True,
+                            "request_username": True,
+                            "request_photo": False,
+                        },
+                    }
+                ],
+                [{"text": "📋 Мои группы"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
         }
 
     async def manageable_groups(self, user_id: int, enabled: bool | None = None) -> list[dict[str, Any]]:
@@ -902,10 +938,26 @@ class AksakalBot:
         groups = await self.manageable_groups(user_id, enabled_filter)
         if not groups:
             message = {
-                "stop": "Активных доступных групп не найдено.",
-                "start": "Выключенных доступных групп не найдено.",
-            }.get(mode, "Групп, где ты являешься администратором и где меня знает бот, не найдено.")
-            await self.tg.send(private_chat_id, message, reply_markup=self.private_main_keyboard())
+                "stop": (
+                    "В локальном списке активных групп пока ничего нет. "
+                    "Нажми «🔎 Выбрать уже добавленную группу» — Telegram сам покажет группы, "
+                    "где бот уже состоит. После выбора я сохраню её и дам кнопку остановки."
+                ),
+                "start": (
+                    "В локальном списке выключенных групп пока ничего нет. "
+                    "Если нужная группа уже есть у бота, выбери её через кнопку ниже."
+                ),
+            }.get(
+                mode,
+                "Локальный список пока пуст. Нажми «🔎 Выбрать уже добавленную группу»: "
+                "Telegram откроет системный список групп, где бот уже состоит.",
+            )
+            request_id = {"all": 7001, "stop": 7002, "start": 7003}.get(mode, 7001)
+            await self.tg.send(
+                private_chat_id,
+                message,
+                reply_markup=self.private_group_request_keyboard(request_id),
+            )
             return
 
         await self.tg.send(
@@ -1046,6 +1098,68 @@ class AksakalBot:
         if not private_chat_id or not user_id:
             return
 
+        shared = msg.get("chat_shared") or {}
+        if shared:
+            target_chat_id = int(shared.get("chat_id", 0) or 0)
+            request_id = int(shared.get("request_id", 0) or 0)
+            if not target_chat_id:
+                await self.tg.send(
+                    private_chat_id,
+                    "Telegram не передал идентификатор выбранной группы. Попробуй выбрать её ещё раз.",
+                    reply_markup=self.private_main_keyboard(),
+                )
+                return
+
+            # request_chat с bot_is_member=True уже ограничивает выбор группами,
+            # где бот состоит. Дополнительно проверяем права пользователя.
+            status = await self.get_member_status(target_chat_id, user_id)
+            if status not in {"creator", "administrator"}:
+                await self.tg.send(
+                    private_chat_id,
+                    "Эту группу вижу, но Telegram не подтверждает, что ты там администратор. "
+                    "Управление оставляю закрытым.",
+                    reply_markup=self.private_main_keyboard(),
+                )
+                return
+
+            title = (shared.get("title") or "").strip()
+            try:
+                chat_info = await self.tg.call("getChat", chat_id=target_chat_id)
+                title = (chat_info.get("title") or title or str(target_chat_id)).strip()
+            except Exception:
+                title = title or str(target_chat_id)
+
+            self.db.ensure_chat(
+                target_chat_id,
+                title,
+                config.default_roast_level,
+                config.min_bot_interval_minutes,
+                config.silence_trigger_minutes,
+            )
+            self.db.cache_group_member_status(target_chat_id, user_id, status)
+
+            # Если группу выбрали именно из режима «остановить/запустить»,
+            # выполняем действие сразу; иначе открываем карточку группы.
+            if request_id == 7002:
+                await self.set_group_enabled_state(target_chat_id, False)
+                await self.tg.send(
+                    private_chat_id,
+                    f"🔴 Аксакал тихо остановлен в группе «{title}».",
+                    reply_markup=self.private_main_keyboard(),
+                )
+                return
+            if request_id == 7003:
+                await self.set_group_enabled_state(target_chat_id, True)
+                await self.tg.send(
+                    private_chat_id,
+                    f"🟢 Аксакал запущен в группе «{title}».",
+                    reply_markup=self.private_main_keyboard(),
+                )
+                return
+
+            await self.show_private_group_card(private_chat_id, user_id, target_chat_id)
+            return
+
         text = (msg.get("text") or "").strip()
         command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
 
@@ -1078,11 +1192,12 @@ class AksakalBot:
             await self.tg.send(
                 private_chat_id,
                 "Через эту личку можно управлять Аксакалом без служебных сообщений в группе.\n\n"
-                "📋 «Мои группы» — выбрать группу и посмотреть состояние.\n"
+                "📋 «Мои группы» — выбрать сохранённую группу и посмотреть состояние.\n"
+                "🔎 «Выбрать группу в Telegram» — открыть системный список уже добавленных групп и привязать нужную к панели.\n"
                 "🛑 «Остановить в группе» — тихо выключить Аксакала.\n"
                 "▶️ «Запустить в группе» — снова включить.\n"
                 "🧪 «Проверить AI» — проверить модели.\n\n"
-                "Управлять можно только теми группами, где Telegram видит тебя администратором.",
+                "Управлять можно только группами, где бот уже состоит и Telegram подтверждает твои права администратора.",
                 reply_markup=self.private_main_keyboard(),
             )
             return
