@@ -842,12 +842,25 @@ class AksakalBot:
 
     async def manageable_groups(self, user_id: int, enabled: bool | None = None) -> list[dict[str, Any]]:
         groups: list[dict[str, Any]] = []
-        for chat in self.db.known_chats():
+        seen_ids: set[int] = set()
+        candidates = self.db.known_chats_for_user(user_id) + self.db.known_chats()
+        for chat in candidates:
+            chat_id = int(chat["chat_id"])
+            if chat_id in seen_ids:
+                continue
+            seen_ids.add(chat_id)
             if enabled is not None and bool(chat.get("enabled", 1)) != enabled:
                 continue
-            chat_id = int(chat["chat_id"])
-            if await self.is_admin(chat_id, user_id):
+            status = await self.get_member_status(chat_id, user_id)
+            if status in {"creator", "administrator"}:
                 groups.append(chat)
+                continue
+            cached = self.db.cached_group_member_status(chat_id, user_id)
+            if status is None and cached and cached.get("status") in {"creator", "administrator"}:
+                age = int(time.time()) - int(cached.get("updated_at") or 0)
+                if age <= 30 * 86400:
+                    groups.append(chat)
+        groups.sort(key=lambda x: ((x.get("title") or "").lower(), int(x["chat_id"])))
         return groups
 
     @staticmethod
@@ -3102,13 +3115,41 @@ class AksakalBot:
             else:
                 await self.send_command_notice(chat_id, "Ответь командой /roast на сообщение человека.")
 
-    async def is_admin(self, chat_id: int, user_id: int) -> bool:
+    async def get_member_status(self, chat_id: int, user_id: int) -> str | None:
         assert self.tg
         try:
             member = await self.tg.call("getChatMember", chat_id=chat_id, user_id=user_id)
-            return member.get("status") in {"creator", "administrator"}
-        except Exception:
+            status = str(member.get("status") or "")
+            self.db.cache_group_member_status(chat_id, user_id, status)
+            return status
+        except Exception as first_error:
+            try:
+                admins = await self.tg.call("getChatAdministrators", chat_id=chat_id)
+                for member in admins or []:
+                    admin_user = member.get("user") or {}
+                    admin_id = int(admin_user.get("id", 0) or 0)
+                    admin_status = str(member.get("status") or "")
+                    if admin_id:
+                        self.db.cache_group_member_status(chat_id, admin_id, admin_status)
+                    if admin_id == user_id:
+                        return admin_status
+                self.db.cache_group_member_status(chat_id, user_id, "member")
+                return "member"
+            except Exception as second_error:
+                print(f"group membership check failed chat={chat_id} user={user_id}: {first_error}; fallback={second_error}")
+                return None
+
+    async def is_admin(self, chat_id: int, user_id: int) -> bool:
+        status = await self.get_member_status(chat_id, user_id)
+        if status in {"creator", "administrator"}:
+            return True
+        if status is not None:
             return False
+        cached = self.db.cached_group_member_status(chat_id, user_id)
+        if cached and cached.get("status") in {"creator", "administrator"}:
+            age = int(time.time()) - int(cached.get("updated_at") or 0)
+            return age <= 7 * 86400
+        return False
 
     async def maybe_emotional_response(self, chat_id: int, msg: dict[str, Any]):
         """Сбрасывает таймер на каждом новом сообщении и оценивает только последнее после паузы."""
