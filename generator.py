@@ -279,6 +279,51 @@ class PhraseGenerator:
             return 3
         return 1
 
+    @staticmethod
+    def address_profile_violation(text: str, profile: str, avoided_addresses: list[str] | None = None) -> str:
+        """
+        Жёсткий фильтр обращений. Даже если модель проигнорировала prompt, она не может
+        назвать человека «брат/сестра» или другим гендерным обращением, пока профиль
+        не подтверждён самим пользователем в переписке.
+        """
+        low = " ".join((text or "").lower().replace("ё", "е").split())
+        if not low:
+            return ""
+
+        avoided = {x.lower().replace("ё", "е") for x in (avoided_addresses or []) if x}
+        male_addresses = ("брат", "братан", "братец", "парень", "молодой", "джигит", "вацок", "уцы")
+        female_addresses = ("сестра", "сестрёнка", "сестренка", "девушка", "молодая")
+
+        # Ищем именно обращение, а не упоминание третьего лица вроде «твой брат пришёл».
+        # Типичные формы обращения: в начале реплики, после запятой/тире или в конце после запятой.
+        def used_as_address(token: str) -> bool:
+            token_re = re.escape(token)
+            patterns = (
+                rf"^s*{token_re}(?:s|[,!?.:;—-]|$)",
+                rf"[,;:—-]s*{token_re}(?:s|[,!?.:;—-]|$)",
+                rf"(?:слушай|смотри|скажи|пойми|давай|эй)s*,?s*{token_re}",
+                rf"{token_re}s*[!?.]?s*$",
+            )
+            return any(re.search(p, low, re.I) for p in patterns)
+
+        for token in male_addresses + female_addresses:
+            if token in avoided and re.search(rf"{re.escape(token)}", low):
+                return f"запрещённое пользователем обращение: {token}"
+
+        male_used = next((x for x in male_addresses if used_as_address(x)), "")
+        female_used = next((x for x in female_addresses if used_as_address(x)), "")
+
+        if profile == "neutral":
+            if male_used or female_used:
+                return "гендерное обращение до подтверждения профиля"
+        elif profile == "male":
+            if female_used:
+                return "женское обращение к пользователю с мужским профилем"
+        elif profile == "female":
+            if male_used:
+                return "мужское обращение к пользователю с женским профилем"
+        return ""
+
     async def generate(
         self,
         *,
@@ -508,10 +553,11 @@ class PhraseGenerator:
 Правило характера: {behavior_rules[behavior_mode]}
 Профиль стиля пользователя: {profile}.
 Обращение по профилю:
-- Ты старший, опытный человек в компании. Не обращайся ко всем подряд «брат» и вообще не используй «брат» как стандартное обращение.
-- male: если обращение действительно нужно, говори как старший к молодому — иногда «молодой», «парень», «джигит», реже «вацок» или «уцы».
-- female: если обращение действительно нужно, естественно «девушка», «молодая»; не делай из пола отдельную тему.
-- neutral: не используй гендерное обращение; лучше вообще обойтись без обращения.
+- Ты старший, опытный человек в компании. Не обращайся ко всем подряд «брат» или «сестра».
+- «Брат», «братан», «сестра» и любые другие гендерные обращения разрешены ТОЛЬКО когда профиль male/female уже подтверждён самим человеком в переписке.
+- male: если обращение действительно нужно, говори как старший к молодому — иногда «молодой», «парень», «джигит», реже «вацок» или «уцы». «Брат» лучше не использовать даже здесь без особой необходимости.
+- female: если обращение действительно нужно, естественно «девушка», «молодая». «Сестра» лучше не использовать без особой необходимости.
+- neutral: профиль ещё не подтверждён — ЗАПРЕЩЕНЫ «брат», «сестра», «парень», «девушка», «молодой», «молодая», «джигит», «вацок», «уцы». Просто отвечай без обращения.
 - В большинстве Reply обращение вообще не нужно: Telegram и так показывает адресата.
 - Используй максимум одно обращение и только если оно звучит живо, а не как повторяющаяся кличка.
 - Никогда не используй обращения, которые этот человек уже запретил: {avoided_text}.
@@ -632,6 +678,14 @@ REPLY-ЦЕПОЧКА ТЕКУЩЕГО РАЗГОВОРА:
             text = text.lstrip("—-: ").strip()
             normalized = normalize(text)
             source_norm = normalize(source_text or "")
+
+            address_error = self.address_profile_violation(
+                text,
+                profile,
+                avoided_addresses,
+            )
+            if address_error:
+                return "", address_error
 
             for old in recent_bot_replies[:16]:
                 old_norm = normalize(old)
