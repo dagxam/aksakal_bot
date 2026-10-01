@@ -1324,6 +1324,31 @@ class AksakalBot:
             await self.handle_reaction(update["message_reaction"])
         elif "my_chat_member" in update:
             await self.handle_my_chat_member(update["my_chat_member"])
+        elif "chat_member" in update:
+            await self.handle_chat_member(update["chat_member"])
+
+    async def handle_chat_member(self, upd: dict[str, Any]):
+        chat = upd.get("chat") or {}
+        if chat.get("type") not in {"group", "supergroup"}:
+            return
+        member = upd.get("new_chat_member") or {}
+        user = member.get("user") or {}
+        user_id = int(user.get("id", 0) or 0)
+        chat_id = int(chat.get("id", 0) or 0)
+        if not user_id or not chat_id or user.get("is_bot"):
+            return
+        self.db.ensure_chat(
+            chat_id,
+            chat.get("title"),
+            config.default_roast_level,
+            config.min_bot_interval_minutes,
+            config.silence_trigger_minutes,
+        )
+        self.db.cache_group_member_status(
+            chat_id,
+            user_id,
+            str(member.get("status") or ""),
+        )
 
     async def handle_my_chat_member(self, upd: dict[str, Any]):
         if not self.tg:
@@ -1346,6 +1371,11 @@ class AksakalBot:
             config.min_bot_interval_minutes,
             config.silence_trigger_minutes,
         )
+
+        actor = upd.get("from") or {}
+        actor_id = int(actor.get("id", 0) or 0)
+        if actor_id and not actor.get("is_bot"):
+            await self.get_member_status(chat_id, actor_id)
 
         # Если бот только добавлен без админки — объясняем, что для полноценной работы
         # нужно повышение. Полную панель покажем именно после активации администратором.
