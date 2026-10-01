@@ -1062,15 +1062,15 @@ class AksakalBot:
             )
             return
 
-        if command in {"/groups", "/group"} or text == "📋 Мои группы":
+        if command in {"/groups", "/group", "/mygroups"} or text.lower() in {"📋 мои группы", "мои группы", "группы"}:
             await self.show_private_group_picker(private_chat_id, user_id, mode="all")
             return
 
-        if command == "/stopbot" or text == "🛑 Остановить в группе":
+        if command in {"/stopbot", "/stopgroup", "/stopgroups", "/стопгрупп"} or text.lower() in {"🛑 остановить в группе", "остановить в группе", "стопгрупп", "стоп группа"}:
             await self.show_private_group_picker(private_chat_id, user_id, mode="stop")
             return
 
-        if command == "/startbot" or text == "▶️ Запустить в группе":
+        if command in {"/startbot", "/startgroup", "/startgroups"} or text.lower() in {"▶️ запустить в группе", "запустить в группе", "стартгрупп", "старт группа"}:
             await self.show_private_group_picker(private_chat_id, user_id, mode="start")
             return
 
@@ -1203,8 +1203,8 @@ class AksakalBot:
         private_commands = [
             {"command": "start", "description": "Открыть панель управления"},
             {"command": "groups", "description": "Мои группы"},
-            {"command": "stopbot", "description": "Остановить в выбранной группе"},
-            {"command": "startbot", "description": "Запустить в выбранной группе"},
+            {"command": "stopgroup", "description": "Остановить в выбранной группе"},
+            {"command": "startgroup", "description": "Запустить в выбранной группе"},
             {"command": "test", "description": "Проверить AI"},
             {"command": "help", "description": "Помощь"},
         ]
