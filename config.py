@@ -31,6 +31,29 @@ def _bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _database_path() -> str:
+    """
+    DATABASE_PATH больше не зависит от cwd процесса.
+    Это важно для systemd/Docker/панелей: один и тот же bot.py всегда видит
+    ту же SQLite-базу и, соответственно, уже добавленные группы.
+    Если раньше база реально лежала в текущем cwd, а рядом со скриптом её нет,
+    используем существующий cwd-файл как совместимый legacy-вариант.
+    """
+    raw = (os.getenv("DATABASE_PATH") or "aksakal.db").strip()
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return str(path)
+
+    script_candidate = Path(__file__).resolve().parent / path
+    cwd_candidate = Path.cwd() / path
+
+    if script_candidate.exists():
+        return str(script_candidate)
+    if cwd_candidate.exists():
+        return str(cwd_candidate)
+    return str(script_candidate)
+
+
 @dataclass(frozen=True)
 class Config:
     env_file_path: str = str(_SCRIPT_ENV)
@@ -43,7 +66,7 @@ class Config:
     )
     mistral_api_key: str = os.getenv("MISTRAL_API_KEY", "")
     mistral_model: str = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
-    database_path: str = os.getenv("DATABASE_PATH", "aksakal.db")
+    database_path: str = _database_path()
     default_roast_level: int = int(os.getenv("DEFAULT_ROAST_LEVEL", "3"))
     min_bot_interval_minutes: int = int(os.getenv("MIN_BOT_INTERVAL_MINUTES", "10"))
     default_response_delay_seconds: int = int(os.getenv("DEFAULT_RESPONSE_DELAY_SECONDS", "20"))
