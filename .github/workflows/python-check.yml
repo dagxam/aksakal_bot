@@ -601,6 +601,39 @@ jobs:
           print("human-style/private-control smoke test OK")
           PY
 
+      - name: Telegram group picker smoke test
+        run: |
+          python - <<'PY'
+          from bot import AksakalBot
+
+          kb = AksakalBot.private_main_keyboard()
+          request_buttons = [
+              button
+              for row in kb["keyboard"]
+              for button in row
+              if "request_chat" in button
+          ]
+          assert len(request_buttons) == 1
+          request = request_buttons[0]["request_chat"]
+          assert request["request_id"] == 7001
+          assert request["chat_is_channel"] is False
+          assert request["bot_is_member"] is True
+          assert request["request_title"] is True
+
+          for request_id in (7001, 7002, 7003):
+              picker = AksakalBot.private_group_request_keyboard(request_id)
+              buttons = [
+                  button
+                  for row in picker["keyboard"]
+                  for button in row
+                  if "request_chat" in button
+              ]
+              assert buttons[0]["request_chat"]["request_id"] == request_id
+              assert buttons[0]["request_chat"]["bot_is_member"] is True
+
+          print("Telegram-native group picker smoke test OK")
+          PY
+
       - name: Existing group recovery smoke test
         run: |
           python - <<'PY'
