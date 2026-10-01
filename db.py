@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat_time ON messages(chat_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_chat_seen ON users(chat_id, last_seen_at DESC);
 
+CREATE TABLE IF NOT EXISTS group_membership_cache (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    updated_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_group_membership_user
+ON group_membership_cache(user_id, status, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS learned_words (
     chat_id INTEGER NOT NULL,
     user_id INTEGER NOT NULL DEFAULT 0,
@@ -342,6 +353,56 @@ class Database:
                 """,
                 (chat_id, title or "", roast_level, min_interval, silence, now),
             )
+
+    def cache_group_member_status(self, chat_id: int, user_id: int, status: str):
+        if not chat_id or not user_id:
+            return
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO group_membership_cache(chat_id,user_id,status,updated_at)
+                VALUES(?,?,?,?)
+                ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                (chat_id, user_id, (status or "")[:32], int(time.time())),
+            )
+
+    def cached_group_member_status(self, chat_id: int, user_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT status,updated_at
+                FROM group_membership_cache
+                WHERE chat_id=? AND user_id=?
+                """,
+                (chat_id, user_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def known_chats_for_user(self, user_id: int) -> list[dict[str, Any]]:
+        """
+        Кандидаты для личной панели управления:
+        - группы, где этот Telegram user уже писал боту;
+        - группы, где ранее был подтверждён его статус участника/админа.
+        Живые права всё равно перепроверяются через Telegram перед изменением настроек.
+        """
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT c.*
+                FROM chats c
+                LEFT JOIN users u
+                  ON u.chat_id=c.chat_id AND u.user_id=?
+                LEFT JOIN group_membership_cache g
+                  ON g.chat_id=c.chat_id AND g.user_id=?
+                WHERE u.user_id IS NOT NULL OR g.user_id IS NOT NULL
+                ORDER BY c.title COLLATE NOCASE ASC, c.chat_id ASC
+                """,
+                (user_id, user_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def known_chats(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
