@@ -343,6 +343,13 @@ class Database:
                 (chat_id, title or "", roast_level, min_interval, silence, now),
             )
 
+    def known_chats(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chats ORDER BY title COLLATE NOCASE ASC, chat_id ASC"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_chat(self, chat_id: int) -> dict[str, Any] | None:
         with self.connect() as conn:
             row = conn.execute("SELECT * FROM chats WHERE chat_id=?", (chat_id,)).fetchone()
