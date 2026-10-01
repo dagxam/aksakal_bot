@@ -588,6 +588,60 @@ jobs:
           print("human-style/private-control smoke test OK")
           PY
 
+      - name: Existing group recovery smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+
+          class FakeTelegram:
+              async def call(self, method, **payload):
+                  if method == "getChatMember":
+                      raise RuntimeError("temporary getChatMember failure")
+                  if method == "getChatAdministrators":
+                      return [
+                          {
+                              "user": {"id": 42, "first_name": "Admin"},
+                              "status": "administrator",
+                          }
+                      ]
+                  raise AssertionError(method)
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              db.ensure_chat(-100111, "Старая группа", 3, 10, 180)
+
+              bot = object.__new__(AksakalBot)
+              bot.db = db
+              bot.tg = FakeTelegram()
+
+              status = asyncio.run(bot.get_member_status(-100111, 42))
+              assert status == "administrator"
+              cached = db.cached_group_member_status(-100111, 42)
+              assert cached and cached["status"] == "administrator"
+
+              groups = asyncio.run(bot.manageable_groups(42))
+              assert len(groups) == 1
+              assert groups[0]["chat_id"] == -100111
+              assert groups[0]["title"] == "Старая группа"
+
+              linked = db.known_chats_for_user(42)
+              assert linked and linked[0]["chat_id"] == -100111
+          finally:
+              try:
+                  os.remove(path)
+              except FileNotFoundError:
+                  pass
+
+          print("existing group recovery smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
