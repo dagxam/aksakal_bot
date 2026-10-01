@@ -822,6 +822,266 @@ class AksakalBot:
         return None
 
 
+    @staticmethod
+    def private_main_keyboard() -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [{"text": "📋 Мои группы"}],
+                [
+                    {"text": "🛑 Остановить в группе"},
+                    {"text": "▶️ Запустить в группе"},
+                ],
+                [
+                    {"text": "🧪 Проверить AI"},
+                    {"text": "ℹ️ Помощь"},
+                ],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
+    async def manageable_groups(self, user_id: int, enabled: bool | None = None) -> list[dict[str, Any]]:
+        groups: list[dict[str, Any]] = []
+        for chat in self.db.known_chats():
+            if enabled is not None and bool(chat.get("enabled", 1)) != enabled:
+                continue
+            chat_id = int(chat["chat_id"])
+            if await self.is_admin(chat_id, user_id):
+                groups.append(chat)
+        return groups
+
+    @staticmethod
+    def private_groups_inline_keyboard(groups: list[dict[str, Any]], action: str = "group") -> dict[str, Any]:
+        rows = []
+        for chat in groups[:30]:
+            chat_id = int(chat["chat_id"])
+            title = (chat.get("title") or str(chat_id)).strip()
+            state = "🟢" if chat.get("enabled", 1) else "🔴"
+            rows.append([
+                {
+                    "text": f"{state} {title}"[:60],
+                    "callback_data": f"ctrl:{action}:{chat_id}",
+                }
+            ])
+        rows.append([{"text": "🔄 Обновить список", "callback_data": "ctrl:list:all"}])
+        return {"inline_keyboard": rows}
+
+    async def show_private_group_picker(
+        self,
+        private_chat_id: int,
+        user_id: int,
+        *,
+        mode: str = "all",
+    ):
+        assert self.tg
+        enabled_filter: bool | None = None
+        title = "📋 Группы, которыми ты можешь управлять:"
+        action = "group"
+        if mode == "stop":
+            enabled_filter = True
+            title = "🛑 Выбери активную группу, где нужно остановить Аксакала:"
+            action = "off"
+        elif mode == "start":
+            enabled_filter = False
+            title = "▶️ Выбери выключенную группу, где нужно запустить Аксакала:"
+            action = "on"
+
+        groups = await self.manageable_groups(user_id, enabled_filter)
+        if not groups:
+            message = {
+                "stop": "Активных доступных групп не найдено.",
+                "start": "Выключенных доступных групп не найдено.",
+            }.get(mode, "Групп, где ты являешься администратором и где меня знает бот, не найдено.")
+            await self.tg.send(private_chat_id, message, reply_markup=self.private_main_keyboard())
+            return
+
+        await self.tg.send(
+            private_chat_id,
+            title,
+            reply_markup=self.private_groups_inline_keyboard(groups, action=action),
+        )
+
+    async def set_group_enabled_state(self, chat_id: int, enabled: bool):
+        self.db.update_chat(chat_id, enabled=1 if enabled else 0)
+        if enabled:
+            return
+
+        pending = self.pending_reply_tasks.pop(chat_id, None)
+        if pending and not pending.done():
+            pending.cancel()
+
+        self.cancel_game_timer(chat_id)
+        game_task = self.game_tasks.pop(chat_id, None)
+        if game_task and not game_task.done():
+            game_task.cancel()
+
+        active = self.active_game(chat_id)
+        if active:
+            await self.stop_specific_game(chat_id, active)
+
+    async def show_private_group_card(self, private_chat_id: int, user_id: int, target_chat_id: int):
+        assert self.tg
+        if not await self.is_admin(target_chat_id, user_id):
+            await self.tg.send(
+                private_chat_id,
+                "Управление недоступно: Telegram не подтверждает права администратора в этой группе.",
+                reply_markup=self.private_main_keyboard(),
+            )
+            return
+
+        chat = self.db.get_chat(target_chat_id)
+        if not chat:
+            await self.tg.send(private_chat_id, "Эта группа ещё не сохранена у Аксакала.")
+            return
+
+        enabled = bool(chat.get("enabled", 1))
+        mode = chat.get("hardness_mode", "auto")
+        fixed = int(chat.get("fixed_hardness", 3))
+        hardness = "AUTO" if mode == "auto" else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
+        delay = int(chat.get("response_delay_seconds", 20))
+        delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        title = (chat.get("title") or str(target_chat_id)).strip()
+
+        buttons = []
+        if enabled:
+            buttons.append([{"text": "🛑 Остановить в этой группе", "callback_data": f"ctrl:off:{target_chat_id}"}])
+        else:
+            buttons.append([{"text": "▶️ Запустить в этой группе", "callback_data": f"ctrl:on:{target_chat_id}"}])
+        buttons.append([{"text": "⬅️ К списку групп", "callback_data": "ctrl:list:all"}])
+
+        await self.tg.send(
+            private_chat_id,
+            f"🏠 {title}\n"
+            f"Состояние: {'🟢 работает' if enabled else '🔴 остановлен'}\n"
+            f"Жёсткость: {hardness}\n"
+            f"Время ответа: {delay_label}\n\n"
+            "Остановка из лички проходит тихо: в группу отдельное сообщение не отправляется.",
+            reply_markup={"inline_keyboard": buttons},
+        )
+
+    async def handle_private_control_callback(self, query: dict[str, Any]):
+        assert self.tg
+        data = query.get("data") or ""
+        sender = query.get("from") or {}
+        message = query.get("message") or {}
+        private_chat = message.get("chat") or {}
+        private_chat_id = int(private_chat.get("id", 0) or 0)
+        user_id = int(sender.get("id", 0) or 0)
+        callback_id = query.get("id")
+
+        if callback_id:
+            await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
+        if not private_chat_id or not user_id or private_chat.get("type") != "private":
+            return
+
+        parts = data.split(":")
+        if len(parts) != 3:
+            return
+        _, action, value = parts
+
+        if action == "list":
+            mode = value if value in {"all", "stop", "start"} else "all"
+            await self.show_private_group_picker(private_chat_id, user_id, mode=mode)
+            return
+
+        try:
+            target_chat_id = int(value)
+        except ValueError:
+            return
+
+        if not await self.is_admin(target_chat_id, user_id):
+            await self.tg.send(
+                private_chat_id,
+                "Не могу изменить эту группу: у твоего аккаунта сейчас нет прав администратора там.",
+                reply_markup=self.private_main_keyboard(),
+            )
+            return
+
+        if action == "group":
+            await self.show_private_group_card(private_chat_id, user_id, target_chat_id)
+            return
+
+        chat = self.db.get_chat(target_chat_id)
+        if not chat:
+            await self.tg.send(private_chat_id, "Группа не найдена в базе Аксакала.")
+            return
+
+        if action == "off":
+            await self.set_group_enabled_state(target_chat_id, False)
+            await self.tg.send(
+                private_chat_id,
+                f"🔴 Аксакал остановлен в группе «{chat.get('title') or target_chat_id}». "
+                "В группу я ничего не отправил.",
+                reply_markup=self.private_main_keyboard(),
+            )
+            return
+
+        if action == "on":
+            await self.set_group_enabled_state(target_chat_id, True)
+            await self.tg.send(
+                private_chat_id,
+                f"🟢 Аксакал снова активен в группе «{chat.get('title') or target_chat_id}».",
+                reply_markup=self.private_main_keyboard(),
+            )
+
+    async def handle_private_message(self, msg: dict[str, Any]):
+        assert self.tg
+        chat = msg.get("chat") or {}
+        sender = msg.get("from") or {}
+        private_chat_id = int(chat.get("id", 0) or 0)
+        user_id = int(sender.get("id", 0) or 0)
+        if not private_chat_id or not user_id:
+            return
+
+        text = (msg.get("text") or "").strip()
+        command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+
+        if command == "/test" or text == "🧪 Проверить AI":
+            health = await self.ai_health_text()
+            await self.tg.send(
+                private_chat_id,
+                "Аксакал работает.\n"
+                f"AI: {self.generator.provider_status()}\n\n"
+                f"{self.ai_diagnostics()}\n\n"
+                "Проверка API:\n"
+                f"{health}",
+                reply_markup=self.private_main_keyboard(),
+            )
+            return
+
+        if command in {"/groups", "/group"} or text == "📋 Мои группы":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="all")
+            return
+
+        if command == "/stopbot" or text == "🛑 Остановить в группе":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="stop")
+            return
+
+        if command == "/startbot" or text == "▶️ Запустить в группе":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="start")
+            return
+
+        if command == "/help" or text == "ℹ️ Помощь":
+            await self.tg.send(
+                private_chat_id,
+                "Через эту личку можно управлять Аксакалом без служебных сообщений в группе.\n\n"
+                "📋 «Мои группы» — выбрать группу и посмотреть состояние.\n"
+                "🛑 «Остановить в группе» — тихо выключить Аксакала.\n"
+                "▶️ «Запустить в группе» — снова включить.\n"
+                "🧪 «Проверить AI» — проверить модели.\n\n"
+                "Управлять можно только теми группами, где Telegram видит тебя администратором.",
+                reply_markup=self.private_main_keyboard(),
+            )
+            return
+
+        # /start и любое обычное первое сообщение возвращают постоянную клавиатуру управления.
+        await self.tg.send(
+            private_chat_id,
+            "Я Аксакал. Здесь можно управлять мной без лишних команд в группах. "
+            "Выбери действие кнопками ниже.",
+            reply_markup=self.private_main_keyboard(),
+        )
+
     async def safe_delete_message(self, chat_id: int, message_id: int):
         if not self.tg or not message_id:
             return
@@ -928,9 +1188,12 @@ class AksakalBot:
         assert self.tg
 
         private_commands = [
-            {"command": "start", "description": "Как работает Аксакал"},
-            {"command": "help", "description": "Что умеет бот"},
-            {"command": "test", "description": "Проверить, что бот работает"},
+            {"command": "start", "description": "Открыть панель управления"},
+            {"command": "groups", "description": "Мои группы"},
+            {"command": "stopbot", "description": "Остановить в выбранной группе"},
+            {"command": "startbot", "description": "Запустить в выбранной группе"},
+            {"command": "test", "description": "Проверить AI"},
+            {"command": "help", "description": "Помощь"},
         ]
 
         async def safe_sync(label: str, get_method: str, set_method: str, desired: Any, **payload):
@@ -1089,38 +1352,15 @@ class AksakalBot:
                 chat_id,
                 "Аксакал полностью активирован.\n"
                 f"AI: {self.generator.provider_status()}\n\n"
-                "Выбери режим, скорость ответа и интервал самостоятельного оживления группы.",
+                "Выбери жёсткость, время ответа и состояние бота.",
                 reply_markup=self.settings_keyboard(current),
             )
 
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
-            text = (msg.get("text") or "").strip()
-            command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
-            if command == "/start" and self.tg:
-                await self.tg.send(
-                    chat["id"],
-                    "Я Аксакал для групповых чатов. Добавь меня в группу, назначь администратором "
-                    "и отключи Privacy Mode: @BotFather → /setprivacy → Disable. "
-                    "В группе настройки доступны через /settings.",
-                )
-            elif command == "/help" and self.tg:
-                await self.tg.send(
-                    chat["id"],
-                    "В личке доступны /start, /help и /test. Основная работа Аксакала идёт внутри группы: "
-                    "он поддерживает разговор, отвечает на вопросы, запоминает контекст, шутит и оживляет тишину.",
-                )
-            elif command == "/test" and self.tg:
-                health = await self.ai_health_text()
-                await self.tg.send(
-                    chat["id"],
-                    "Аксакал работает.\n"
-                    f"AI: {self.generator.provider_status()}\n\n"
-                    f"{self.ai_diagnostics()}\n\n"
-                    "Проверка API:\n"
-                    f"{health}",
-                )
+            if chat.get("type") == "private":
+                await self.handle_private_message(msg)
             return
 
         chat_id = int(chat["id"])
@@ -1170,6 +1410,18 @@ class AksakalBot:
             reply_to_message_id=reply_to_message_id,
             reply_to_user_id=reply_to_user_id,
         )
+
+        current_chat = self.db.get_chat(chat_id) or {}
+        if not current_chat.get("enabled", 1):
+            # В выключенной группе молчим полностью. Единственное исключение — /on от администратора.
+            if text.startswith("/"):
+                disabled_cmd = text.split(maxsplit=1)[0].split("@")[0].lower()
+                if disabled_cmd == "/on":
+                    await self.handle_command(msg, text)
+                command_message_id = int(msg.get("message_id", 0) or 0)
+                if command_message_id:
+                    asyncio.create_task(self.delete_later(chat_id, command_message_id, delay=6))
+            return
 
         if text.startswith("/"):
             old_task = self.pending_reply_tasks.pop(chat_id, None)
@@ -2413,6 +2665,10 @@ class AksakalBot:
         ).strip() or sender.get("username") or str(user_id)
         callback_id = query.get("id")
 
+        if data.startswith("ctrl:"):
+            await self.handle_private_control_callback(query)
+            return
+
         if not chat_id or not user_id or not data.startswith("set:"):
             if callback_id:
                 await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
@@ -2425,8 +2681,18 @@ class AksakalBot:
             return
         section, value = parts[1], parts[2]
 
-        # Игровые кнопки доступны всем участникам группы.
+        # Игровые кнопки доступны всем участникам группы, но не работают, если Аксакал выключен.
         if section in {"game", "rating", "croc", "city", "hang", "quiz", "who"}:
+            current_chat = self.db.get_chat(chat_id) or {}
+            if not current_chat.get("enabled", 1):
+                if callback_id:
+                    await self.tg.call(
+                        "answerCallbackQuery",
+                        callback_query_id=callback_id,
+                        text="Аксакал сейчас выключен в этой группе.",
+                        show_alert=True,
+                    )
+                return
             if callback_id:
                 await self.tg.call("answerCallbackQuery", callback_query_id=callback_id)
 
