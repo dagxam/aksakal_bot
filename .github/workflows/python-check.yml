@@ -540,6 +540,7 @@ jobs:
 
           from bot import AksakalBot
           from db import Database
+          from generator import PhraseGenerator
 
           assert AksakalBot.detect_address_feedback("я девушка")["profile"] == "female"
           assert AksakalBot.detect_address_feedback("я сестра")["profile"] == "female"
