@@ -530,6 +530,64 @@ jobs:
           print("full game system smoke test OK")
           PY
 
+      - name: Human-style profile and private control smoke test
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+
+          assert AksakalBot.detect_address_feedback("я девушка")["profile"] == "female"
+          assert AksakalBot.detect_address_feedback("я устала сегодня")["profile"] == "female"
+          assert AksakalBot.detect_address_feedback("я был там вчера")["profile"] == "male"
+          assert AksakalBot.detect_address_feedback("не называй меня брат")["profile"] is None
+          assert "брат" in AksakalBot.detect_address_feedback("не называй меня брат")["avoid"]
+
+          private_kb = AksakalBot.private_main_keyboard()
+          labels = [
+              button["text"]
+              for row in private_kb["keyboard"]
+              for button in row
+          ]
+          assert "📋 Мои группы" in labels
+          assert "🛑 Остановить в группе" in labels
+          assert "▶️ Запустить в группе" in labels
+          assert "🧪 Проверить AI" in labels
+
+          groups = [
+              {"chat_id": -1001, "title": "Первая", "enabled": 1},
+              {"chat_id": -1002, "title": "Вторая", "enabled": 0},
+          ]
+          inline = AksakalBot.private_groups_inline_keyboard(groups)
+          callbacks = [
+              button["callback_data"]
+              for row in inline["inline_keyboard"]
+              for button in row
+          ]
+          assert "ctrl:group:-1001" in callbacks
+          assert "ctrl:group:-1002" in callbacks
+          assert "ctrl:list:all" in callbacks
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              db.ensure_chat(-1001, "Первая", 3, 10, 180)
+              db.ensure_chat(-1002, "Вторая", 3, 10, 180)
+              db.update_chat(-1002, enabled=0)
+              known = db.known_chats()
+              assert {x["chat_id"] for x in known} == {-1001, -1002}
+          finally:
+              try:
+                  os.remove(path)
+              except FileNotFoundError:
+                  pass
+
+          print("human-style/private-control smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
