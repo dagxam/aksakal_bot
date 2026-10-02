@@ -1178,7 +1178,9 @@ class AksakalBot:
         delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
         title = (chat.get("title") or str(target_chat_id)).strip()
 
-        buttons = []
+        buttons = [
+            [{"text": "⚙️ Настройки этой группы", "callback_data": f"ctrl:settings:{target_chat_id}"}],
+        ]
         if enabled:
             buttons.append([{"text": "🛑 Остановить в этой группе", "callback_data": f"ctrl:off:{target_chat_id}"}])
         else:
@@ -1397,6 +1399,31 @@ class AksakalBot:
             "Выбери действие кнопками ниже.",
             reply_markup=private_keyboard,
         )
+
+    async def send_admin_private(
+        self,
+        group_chat_id: int,
+        user_id: int,
+        text: str,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> bool:
+        """Отправляет служебный ответ только администратору в личку, не засоряя группу."""
+        assert self.tg
+        if not await self.is_admin(group_chat_id, user_id):
+            return False
+        chat = self.db.get_chat(group_chat_id) or {}
+        title = (chat.get("title") or str(group_chat_id)).strip()
+        try:
+            await self.tg.send(
+                user_id,
+                f"🏠 {title}\n\n{text}",
+                reply_markup=reply_markup or self.private_main_keyboard(),
+            )
+            await self.sync_private_command_menu(user_id, user_id)
+            return True
+        except Exception as exc:
+            print(f"private admin reply skipped user={user_id} group={group_chat_id}: {exc}")
+            return False
 
     async def safe_delete_message(self, chat_id: int, message_id: int):
         if not self.tg or not message_id:
@@ -1724,15 +1751,16 @@ class AksakalBot:
             )
             return
 
-        # Срабатывает и при добавлении сразу администратором, и при member → administrator.
+        # При повышении не публикуем админ-настройки в общей группе.
         if new_status == "administrator" and old_status != "administrator":
-            current = self.db.get_chat(chat_id) or {}
+            if actor_id:
+                try:
+                    await self.show_private_group_settings(actor_id, actor_id, chat_id)
+                except Exception as exc:
+                    print(f"private activation settings skipped {actor_id}/{chat_id}: {exc}")
             await self.tg.send(
                 chat_id,
-                "Аксакал полностью активирован.\n"
-                f"AI: {self.generator.provider_status()}\n\n"
-                "Выбери жёсткость, время ответа и состояние бота.",
-                reply_markup=self.settings_keyboard(current),
+                "Аксакал полностью активирован. Админ-настройки доступны в личном чате с ботом.",
             )
 
     async def handle_message(self, msg: dict[str, Any]):
@@ -3190,17 +3218,16 @@ class AksakalBot:
             self.db.update_chat(chat_id, enabled=1 if value == "on" else 0)
 
         if callback_id:
-            await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Сохранено")
-        fresh = self.db.get_chat(chat_id) or {}
-        try:
-            await self.tg.edit(
-                chat_id,
-                int(msg.get("message_id", 0)),
-                self.settings_text(fresh),
-                self.settings_keyboard(fresh),
+            await self.tg.call(
+                "answerCallbackQuery",
+                callback_query_id=callback_id,
+                text="Сохранено. Настройки перенесены в личный чат.",
             )
-        except Exception:
-            await self.show_settings(chat_id)
+        try:
+            await self.show_private_group_settings(user_id, user_id, chat_id)
+        except Exception as exc:
+            print(f"private settings callback delivery skipped {user_id}/{chat_id}: {exc}")
+        await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
 
     async def handle_command(self, msg: dict[str, Any], text: str):
         assert self.tg
