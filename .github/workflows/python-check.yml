@@ -728,10 +728,116 @@ jobs:
               assert expected in admin_names
 
           private_names = {x["command"] for x in AksakalBot.private_admin_commands()}
-          for expected in {"start", "groups", "settings", "status", "stopgroup", "startgroup", "test", "help"}:
+          for expected in {
+              "start", "groups", "settings", "status", "stopgroup", "startgroup",
+              "games", "crocodile", "cities", "hangman", "quiz", "whoami", "stopgame",
+              "rating", "mystats", "roast", "good", "bad", "test", "on", "off",
+              "hardness", "time", "silence", "profile", "help",
+          }:
               assert expected in private_names
 
+          assert AksakalBot.command_cleanup_delay("/settings") == 1
+          assert AksakalBot.command_cleanup_delay("/status") == 1
+          assert AksakalBot.command_cleanup_delay("/hardness super") == 1
+          assert AksakalBot.command_cleanup_delay("/games") == 6
+          assert AksakalBot.looks_like_attack("что ты несёшь")
+          assert AksakalBot.looks_like_attack("старый дед, помолчи")
+          assert AksakalBot.looks_like_attack("бездарь")
+
           print("silence/attack/admin-command smoke test OK")
+          PY
+
+      - name: Live silence reactivation smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+          import time
+
+          from bot import AksakalBot
+          from db import Database
+
+          class FakeTelegram:
+              def __init__(self):
+                  self.messages = []
+              async def send(self, chat_id, text, reply_to_message_id=None, reply_markup=None):
+                  self.messages.append({
+                      "chat_id": chat_id,
+                      "text": text,
+                      "reply_markup": reply_markup,
+                  })
+                  return {"message_id": len(self.messages)}
+
+          async def main():
+              fd, path = tempfile.mkstemp(suffix=".db")
+              os.close(fd)
+              try:
+                  db = Database(path)
+                  chat_id = -100777
+                  db.ensure_chat(chat_id, "Тихая группа", 3, 10, 15)
+                  now = int(time.time())
+                  db.update_chat(
+                      chat_id,
+                      enabled=1,
+                      silence_minutes=15,
+                      last_activity_at=now - 5000,
+                      last_bot_message_at=now - 5000,
+                      silence_nudge_count=0,
+                  )
+                  for uid, name in [(1, "Али"), (2, "Магомед"), (3, "Расул")]:
+                      db.touch_user(chat_id, {"id": uid, "first_name": name}, "message")
+
+                  bot = object.__new__(AksakalBot)
+                  bot.db = db
+                  bot.tg = FakeTelegram()
+                  bot.pending_reply_tasks = {}
+                  bot.game_tasks = {}
+                  bot.game_timer_tasks = {}
+
+                  picked = []
+                  async def fake_roast(chat_id, target_user_id, *args, **kwargs):
+                      picked.append(target_user_id)
+                      db.mark_roasted(chat_id, target_user_id)
+                      db.update_chat(chat_id, last_bot_message_at=int(time.time()))
+                      return True
+
+                  bot.roast = fake_roast
+
+                  await bot.check_silent_chats()
+                  assert len(picked) == 1
+                  first = picked[0]
+
+                  db.update_chat(
+                      chat_id,
+                      last_activity_at=int(time.time()) - 5000,
+                      last_bot_message_at=int(time.time()) - 5000,
+                  )
+                  await bot.check_silent_chats()
+                  assert len(picked) == 2
+                  assert picked[1] != first
+
+                  db.update_chat(
+                      chat_id,
+                      last_activity_at=int(time.time()) - 5000,
+                      last_bot_message_at=int(time.time()) - 5000,
+                  )
+                  await bot.check_silent_chats()
+                  assert len(picked) == 2
+                  assert bot.tg.messages
+                  last = bot.tg.messages[-1]
+                  assert "🎮" in last["text"]
+                  assert last["reply_markup"] == bot.game_center_keyboard()
+                  assert db.get_chat(chat_id)["silence_nudge_count"] == 3
+              finally:
+                  for suffix in ("", "-shm", "-wal"):
+                      try:
+                          os.remove(path + suffix)
+                      except FileNotFoundError:
+                          pass
+
+          asyncio.run(main())
+          print("live silence reactivation smoke test OK")
           PY
 
       - name: Live game engines smoke test
