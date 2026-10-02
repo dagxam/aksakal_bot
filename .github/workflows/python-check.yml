@@ -923,6 +923,129 @@ jobs:
           print("conversational pause/wake smoke test OK")
           PY
 
+      - name: Message cleanup and gender memory smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+
+          class FakeTelegram:
+              def __init__(self):
+                  self.sent = []
+                  self.deleted = []
+              async def send(self, chat_id, text, reply_to_message_id=None, reply_markup=None):
+                  self.sent.append((chat_id, text, reply_to_message_id))
+                  return {"message_id": 8000 + len(self.sent)}
+              async def delete(self, chat_id, message_id):
+                  self.deleted.append(message_id)
+                  return True
+              async def delete_many(self, chat_id, message_ids):
+                  self.deleted.extend(message_ids)
+                  return True
+
+          async def main():
+              assert AksakalBot.detect_delete_request("удали мои сообщения") == "mine"
+              assert AksakalBot.detect_delete_request("удали все мои сообщения") == "mine"
+              assert AksakalBot.detect_delete_request("удали все твои сообщения") == "bot"
+              assert AksakalBot.detect_delete_request("удали свои сообщения") == "bot"
+              assert AksakalBot.detect_delete_request("удали сообщения пользователя") == "user"
+              assert AksakalBot.detect_delete_request("удали его сообщения") == "user"
+              assert AksakalBot.detect_delete_request("удали её сообщения") == "user"
+              assert AksakalBot.detect_delete_request("удали сообщение завтра") is None
+
+              assert AksakalBot.detect_replied_gender_profile("это девушка") == "female"
+              assert AksakalBot.detect_replied_gender_profile("она женщина") == "female"
+              assert AksakalBot.detect_replied_gender_profile("это парень") == "male"
+              assert AksakalBot.detect_replied_gender_profile("он мужчина") == "male"
+              assert AksakalBot.detect_replied_gender_profile("кажется это парень") is None
+
+              fd, path = tempfile.mkstemp(suffix=".db")
+              os.close(fd)
+              try:
+                  db = Database(path)
+                  chat_id = -100554
+                  db.ensure_chat(chat_id, "Очистка", 3, 10, 180)
+                  user1 = {"id": 11, "first_name": "Али"}
+                  user2 = {"id": 22, "first_name": "Марина"}
+                  db.touch_user(chat_id, user1, "message")
+                  db.touch_user(chat_id, user2, "message")
+                  db.add_message(chat_id, 101, 11, "", "Али", "message", "первое")
+                  db.add_message(chat_id, 102, 11, "", "Али", "message", "второе")
+                  db.add_message(chat_id, 103, 22, "", "Марина", "message", "текст")
+                  db.add_bot_message(chat_id, 104, "ответ Аксакала")
+
+                  assert set(db.deletable_message_ids(chat_id, user_id=11)) == {101, 102}
+                  assert db.deletable_message_ids(chat_id, bot_only=True) == [104]
+
+                  bot = object.__new__(AksakalBot)
+                  bot.db = db
+                  bot.tg = FakeTelegram()
+                  bot.pending_reply_tasks = {}
+                  bot.game_tasks = {}
+                  bot.game_timer_tasks = {}
+                  bot.bot_user_id = 999
+                  bot.bot_username = "aksakal_test_bot"
+                  bot.generator = type("G", (), {"enabled": False})()
+
+                  deleted = await bot.delete_tracked_messages(chat_id, [101, 102])
+                  assert deleted == 2
+                  assert set(bot.tg.deleted) >= {101, 102}
+                  assert not db.deletable_message_ids(chat_id, user_id=11)
+
+                  # Все новые исходящие сообщения Аксакала можно централизованно учитывать.
+                  bot.record_outgoing_message(chat_id, {"message_id": 105}, "новый ответ", None)
+                  assert 105 in db.deletable_message_ids(chat_id, bot_only=True)
+
+                  async def fake_notice(*args, **kwargs):
+                      return {"message_id": 9999}
+                  async def fake_consider(*args, **kwargs):
+                      return True
+                  bot.send_command_notice = fake_notice
+                  bot.maybe_emotional_response = fake_consider
+
+                  # Reply-уточнение пола сохраняется именно пользователю, на которого ответили.
+                  await bot.handle_message({
+                      "message_id": 106,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Очистка"},
+                      "from": {"id": 11, "first_name": "Али"},
+                      "text": "это девушка",
+                      "reply_to_message": {
+                          "message_id": 103,
+                          "from": {"id": 22, "first_name": "Марина"},
+                          "text": "текст",
+                      },
+                  })
+                  profile = db.user_profile_summary(chat_id, 22)
+                  assert profile["style_profile"] == "female"
+
+                  await bot.handle_message({
+                      "message_id": 107,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Очистка"},
+                      "from": {"id": 11, "first_name": "Али"},
+                      "text": "это парень",
+                      "reply_to_message": {
+                          "message_id": 103,
+                          "from": {"id": 22, "first_name": "Марина"},
+                          "text": "текст",
+                      },
+                  })
+                  profile2 = db.user_profile_summary(chat_id, 22)
+                  assert profile2["style_profile"] == "male"
+              finally:
+                  for suffix in ("", "-shm", "-wal"):
+                      try:
+                          os.remove(path + suffix)
+                      except FileNotFoundError:
+                          pass
+
+          asyncio.run(main())
+          print("message cleanup/gender memory smoke test OK")
+          PY
+
       - name: Live silence reactivation smoke test
         run: |
           python - <<'PY'
