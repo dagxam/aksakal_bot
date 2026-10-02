@@ -575,6 +575,25 @@ class Database:
         """Сохраняет ответ Аксакала и его связь с сообщением, на которое он ответил."""
         now = int(time.time())
         with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM messages
+                WHERE chat_id=? AND telegram_message_id=? AND kind='bot'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (chat_id, message_id),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE messages
+                    SET content=?,reply_to_message_id=COALESCE(?,reply_to_message_id),
+                        reply_to_user_id=COALESCE(?,reply_to_user_id)
+                    WHERE id=?
+                    """,
+                    (content[:2000], reply_to_message_id, reply_to_user_id, int(existing["id"])),
+                )
+                return
             conn.execute(
                 """
                 INSERT INTO messages(
@@ -587,6 +606,60 @@ class Database:
                     reply_to_message_id, reply_to_user_id, now,
                 ),
             )
+
+    def deletable_message_ids(
+        self,
+        chat_id: int,
+        *,
+        user_id: int | None = None,
+        bot_only: bool = False,
+        max_age_seconds: int = 48 * 3600,
+    ) -> list[int]:
+        cutoff = int(time.time()) - max(60, int(max_age_seconds))
+        clauses = ["chat_id=?", "created_at>=?"]
+        params: list[Any] = [chat_id, cutoff]
+        if bot_only:
+            clauses.append("kind='bot'")
+        elif user_id is not None:
+            clauses.append("user_id=?")
+            params.append(int(user_id))
+        else:
+            return []
+
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT telegram_message_id, MAX(created_at) AS newest
+                FROM messages
+                WHERE {' AND '.join(clauses)}
+                GROUP BY telegram_message_id
+                ORDER BY newest DESC
+                """,
+                params,
+            ).fetchall()
+        return [int(row["telegram_message_id"]) for row in rows if int(row["telegram_message_id"] or 0)]
+
+    def forget_messages(self, chat_id: int, message_ids: list[int]):
+        ids = sorted({int(x) for x in message_ids if int(x)})
+        if not ids:
+            return
+        with self.connect() as conn:
+            for start in range(0, len(ids), 400):
+                batch = ids[start:start + 400]
+                placeholders = ",".join("?" for _ in batch)
+                args = [chat_id, *batch]
+                conn.execute(
+                    f"DELETE FROM messages WHERE chat_id=? AND telegram_message_id IN ({placeholders})",
+                    args,
+                )
+                conn.execute(
+                    f"DELETE FROM bot_responses WHERE chat_id=? AND telegram_message_id IN ({placeholders})",
+                    args,
+                )
+                conn.execute(
+                    f"DELETE FROM response_feedback WHERE chat_id=? AND bot_message_id IN ({placeholders})",
+                    args,
+                )
 
     def message_thread(self, chat_id: int, message_id: int | None, max_depth: int = 8) -> list[dict[str, Any]]:
         """Восстанавливает цепочку Telegram Reply назад от конкретного сообщения."""
