@@ -1559,9 +1559,12 @@ class Database:
         with self.connect() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM messages
-                WHERE chat_id=? AND kind IN ('message','bot')
-                ORDER BY id DESC LIMIT ?
+                SELECT m.*
+                FROM messages m
+                LEFT JOIN bot_ignored_users i
+                  ON i.chat_id=m.chat_id AND i.user_id=m.user_id
+                WHERE m.chat_id=? AND m.kind IN ('message','bot') AND i.user_id IS NULL
+                ORDER BY m.id DESC LIMIT ?
                 """,
                 (chat_id, scan),
             ).fetchall()
@@ -1585,7 +1588,14 @@ class Database:
     def recent_context(self, chat_id: int, limit: int) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM messages WHERE chat_id=? ORDER BY id DESC LIMIT ?",
+                """
+                SELECT m.*
+                FROM messages m
+                LEFT JOIN bot_ignored_users i
+                  ON i.chat_id=m.chat_id AND i.user_id=m.user_id
+                WHERE m.chat_id=? AND i.user_id IS NULL
+                ORDER BY m.id DESC LIMIT ?
+                """,
                 (chat_id, limit),
             ).fetchall()
         return [dict(r) for r in reversed(rows)]
