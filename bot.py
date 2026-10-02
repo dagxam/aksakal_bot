@@ -1870,20 +1870,45 @@ class AksakalBot:
         return 1 if cmd in admin_only else 6
 
     @staticmethod
-    def is_quiet_request(text: str) -> bool:
+    def normalize_control_phrase(text: str) -> str:
         import re
         low = (text or "").lower().replace("ё", "е")
         low = re.sub(r"[^a-zа-я0-9@_\s-]+", " ", low)
-        low = " ".join(low.split())
+        return " ".join(low.split())
+
+    @classmethod
+    def is_quiet_request(cls, text: str) -> bool:
+        import re
+        low = cls.normalize_control_phrase(text)
         if not low:
             return False
+
+        # Только короткие прямые просьбы, чтобы фраза вроде
+        # "он сказал мне подожди" случайно не выключала Аксакала.
+        name = r"(?:аксакал|акскал|аксакл|бот)"
+        action = r"(?:помолчи|молчи|остановись|останови|прекрати|подожди|хватит|отдохни)"
+        tail = r"(?:\s+(?:пожалуйста|пока|немного|чуть|чуть-чуть))?"
         patterns = (
-            r"^(?:аксакал|бот)?\s*(?:помолчи|молчи)(?:\s+(?:пожалуйста|пока))?$",
-            r"^(?:помолчи|молчи)\s+(?:аксакал|бот)(?:\s+(?:пожалуйста|пока))?$",
+            rf"^(?:{name}\s+)?{action}{tail}$",
+            rf"^{action}\s+{name}{tail}$",
         )
         return any(re.fullmatch(pattern, low) for pattern in patterns)
 
+    @classmethod
+    def is_wake_request(cls, text: str) -> bool:
+        import re
+        low = cls.normalize_control_phrase(text)
+        if not low:
+            return False
+        name = r"(?:аксакал|акскал|аксакл)"
+        wake = (
+            r"(?:где\s+ты|ты\s+где|не\s+молчи|хватит\s+молчать|"
+            r"проснись|просыпайся|вернись|отзовись|ты\s+тут|ты\s+здесь)"
+        )
+        return bool(re.fullmatch(rf"{name}\s+{wake}", low))
+
     def message_directed_to_bot(self, chat_id: int, msg: dict[str, Any], text: str) -> bool:
+        import re
         reply = msg.get("reply_to_message") or {}
         reply_message_id = int(reply.get("message_id", 0) or 0)
         reply_from = reply.get("from") or {}
@@ -1892,10 +1917,12 @@ class AksakalBot:
         if reply_message_id and self.db.get_bot_response(chat_id, reply_message_id):
             return True
 
-        low = (text or "").lower()
+        low = self.normalize_control_phrase(text)
         if self.bot_username and f"@{self.bot_username}" in low:
             return True
-        return "аксакал" in low
+        # Поддерживаем частую опечатку "акскал", чтобы после паузы
+        # бот не выглядел зависшим из-за одной пропущенной буквы.
+        return bool(re.search(r"(?<![а-яa-z0-9_])(?:аксакал|акскал|аксакл)(?![а-яa-z0-9_])", low))
 
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
@@ -1994,8 +2021,8 @@ class AksakalBot:
 
         direct_to_bot = self.message_directed_to_bot(chat_id, msg, text)
 
-        # Разговорная команда без slash: "помолчи" переводит Аксакала в устойчивый
-        # режим тишины. Состояние хранится в БД и переживает перезапуск процесса.
+        # Разговорные команды без slash переводят Аксакала в устойчивую паузу.
+        # Состояние хранится в БД и переживает перезапуск процесса.
         if kind == "message" and self.is_quiet_request(text):
             old_task = self.pending_reply_tasks.pop(chat_id, None)
             if old_task and not old_task.done():
@@ -2008,16 +2035,21 @@ class AksakalBot:
             self.db.update_chat(chat_id, manual_quiet=1, silence_nudge_count=0)
             await self.send_command_notice(
                 chat_id,
-                "Хорошо, молчу. Позовите меня по имени, через @упоминание или ответьте на моё сообщение — снова включусь.",
+                "Ладно, дам чуть отдохнуть 😄",
                 ttl=7,
             )
             return
 
         current_chat = self.db.get_chat(chat_id) or {}
         if current_chat.get("manual_quiet", 0):
-            if not direct_to_bot:
+            # Снимаем паузу только при явном обращении: имя/опечатка имени,
+            # @упоминание, Reply на сообщение бота или узнаваемая фраза пробуждения.
+            wake_request = kind == "message" and self.is_wake_request(text)
+            if not (direct_to_bot or wake_request):
                 return
-            # Первое прямое обращение само снимает тишину и обрабатывается как обычное сообщение.
+            # Первое прямое обращение само снимает паузу и дальше проходит
+            # обычную обработку, поэтому Аксакал не просто "включается",
+            # а отвечает на саму фразу пользователя.
             self.db.update_chat(chat_id, manual_quiet=0, silence_nudge_count=0)
 
         # Игры можно запускать обычной фразой, без slash-команд.
