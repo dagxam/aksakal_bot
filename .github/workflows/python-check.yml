@@ -839,17 +839,12 @@ jobs:
                   bot.bot_username = "aksakal_test_bot"
                   bot.generator = type("G", (), {"enabled": False})()
 
-                  notices = []
                   considered = []
 
-                  async def fake_notice(chat_id, text, **kwargs):
-                      notices.append(text)
-                      return {"message_id": 500}
                   async def fake_consider(chat_id, msg):
                       considered.append(msg.get("text") or "")
                       return True
 
-                  bot.send_command_notice = fake_notice
                   bot.maybe_emotional_response = fake_consider
 
                   # "Остановись" включает устойчивую паузу.
@@ -860,7 +855,7 @@ jobs:
                       "text": "остановись",
                   })
                   assert db.get_chat(chat_id)["manual_quiet"] == 1
-                  assert notices[-1] == "Ладно, дам чуть отдохнуть 😄"
+                  assert bot.tg.messages[-1]["text"] == "Ладно, дам чуть отдохнуть 😄"
                   assert not considered
 
                   # Обычный разговор во время паузы игнорируется.
