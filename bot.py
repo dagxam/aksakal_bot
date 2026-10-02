@@ -878,16 +878,39 @@ class AksakalBot:
         }
 
     @staticmethod
+    def private_group_request_keyboard(request_id: int = 7001) -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [
+                    {
+                        "text": "🔎 Выбрать уже добавленную группу",
+                        "request_chat": {
+                            "request_id": request_id,
+                            "chat_is_channel": False,
+                            "bot_is_member": True,
+                            "request_title": True,
+                            "request_username": True,
+                            "request_photo": False,
+                        },
+                    }
+                ],
+                [{"text": "📋 Мои группы"}],
+            ],
+            "resize_keyboard": True,
+            "one_time_keyboard": True,
+        }
+
+    @staticmethod
     def private_admin_commands() -> list[dict[str, str]]:
         return [
             {"command": "start", "description": "Панель управления"},
             {"command": "groups", "description": "Мои группы"},
             {"command": "settings", "description": "Настройки выбранной группы"},
-            {"command": "status", "description": "Состояние группы"},
+            {"command": "status", "description": "Состояние выбранной группы"},
             {"command": "stopgroup", "description": "Остановить в выбранной группе"},
             {"command": "startgroup", "description": "Запустить в выбранной группе"},
             {"command": "test", "description": "Проверить AI"},
-            {"command": "help", "description": "Все доступные команды"},
+            {"command": "help", "description": "Все команды администратора"},
         ]
 
     async def sync_private_command_menu(self, private_chat_id: int, user_id: int) -> bool:
@@ -1249,6 +1272,9 @@ class AksakalBot:
         if not private_chat_id or not user_id:
             return
 
+        is_group_admin = await self.sync_private_command_menu(private_chat_id, user_id)
+        private_keyboard = self.private_main_keyboard() if is_group_admin else self.private_basic_keyboard()
+
         shared = msg.get("chat_shared") or {}
         if shared:
             target_chat_id = int(shared.get("chat_id", 0) or 0)
@@ -1257,7 +1283,7 @@ class AksakalBot:
                 await self.tg.send(
                     private_chat_id,
                     "Telegram не передал идентификатор выбранной группы. Попробуй выбрать её ещё раз.",
-                    reply_markup=self.private_main_keyboard(),
+                    reply_markup=private_keyboard,
                 )
                 return
 
@@ -1269,7 +1295,7 @@ class AksakalBot:
                     private_chat_id,
                     "Эту группу вижу, но Telegram не подтверждает, что ты там администратор. "
                     "Управление оставляю закрытым.",
-                    reply_markup=self.private_main_keyboard(),
+                    reply_markup=private_keyboard,
                 )
                 return
 
@@ -1296,7 +1322,7 @@ class AksakalBot:
                 await self.tg.send(
                     private_chat_id,
                     f"🔴 Аксакал тихо остановлен в группе «{title}».",
-                    reply_markup=self.private_main_keyboard(),
+                    reply_markup=private_keyboard,
                 )
                 return
             if request_id == 7003:
@@ -1304,7 +1330,7 @@ class AksakalBot:
                 await self.tg.send(
                     private_chat_id,
                     f"🟢 Аксакал запущен в группе «{title}».",
-                    reply_markup=self.private_main_keyboard(),
+                    reply_markup=private_keyboard,
                 )
                 return
             if request_id == 7004:
@@ -1334,7 +1360,7 @@ class AksakalBot:
                 f"{self.ai_diagnostics()}\n\n"
                 "Проверка API:\n"
                 f"{health}",
-                reply_markup=self.private_main_keyboard(),
+                reply_markup=private_keyboard,
             )
             return
 
@@ -1360,7 +1386,7 @@ class AksakalBot:
                 "▶️ «Запустить в группе» — снова включить.\n"
                 "🧪 «Проверить AI» — проверить модели.\n\n"
                 "Управлять можно только группами, где бот уже состоит и Telegram подтверждает твои права администратора.",
-                reply_markup=self.private_main_keyboard(),
+                reply_markup=private_keyboard,
             )
             return
 
@@ -1369,7 +1395,7 @@ class AksakalBot:
             private_chat_id,
             "Я Аксакал. Здесь можно управлять мной без лишних команд в группах. "
             "Выбери действие кнопками ниже.",
-            reply_markup=self.private_main_keyboard(),
+            reply_markup=private_keyboard,
         )
 
     async def safe_delete_message(self, chat_id: int, message_id: int):
@@ -1478,12 +1504,31 @@ class AksakalBot:
         assert self.tg
 
         private_commands = [
-            {"command": "start", "description": "Открыть панель управления"},
-            {"command": "groups", "description": "Мои группы"},
-            {"command": "stopgroup", "description": "Остановить в выбранной группе"},
-            {"command": "startgroup", "description": "Запустить в выбранной группе"},
-            {"command": "test", "description": "Проверить AI"},
+            {"command": "start", "description": "Открыть панель"},
             {"command": "help", "description": "Помощь"},
+        ]
+        group_admin_commands = [
+            {"command": "settings", "description": "Настройки Аксакала"},
+            {"command": "status", "description": "Состояние и режим"},
+            {"command": "games", "description": "Выбрать игру"},
+            {"command": "crocodile", "description": "Крокодил"},
+            {"command": "cities", "description": "Города"},
+            {"command": "hangman", "description": "Виселица"},
+            {"command": "quiz", "description": "Викторина"},
+            {"command": "whoami", "description": "Кто я?"},
+            {"command": "stopgame", "description": "Закончить игру"},
+            {"command": "rating", "description": "Игровой рейтинг"},
+            {"command": "mystats", "description": "Моя игровая статистика"},
+            {"command": "roast", "description": "Подколоть сообщение"},
+            {"command": "good", "description": "Отметить удачный ответ"},
+            {"command": "bad", "description": "Отметить плохой ответ"},
+            {"command": "test", "description": "Проверить AI"},
+            {"command": "on", "description": "Включить Аксакала"},
+            {"command": "off", "description": "Выключить Аксакала"},
+            {"command": "hardness", "description": "Жёсткость auto/normal/angry/super"},
+            {"command": "time", "description": "Задержка ответа"},
+            {"command": "silence", "description": "Таймер оживления группы"},
+            {"command": "help", "description": "Все команды"},
         ]
 
         async def safe_sync(label: str, get_method: str, set_method: str, desired: Any, **payload):
@@ -1520,6 +1565,7 @@ class AksakalBot:
         try:
             private_scope = {"type": "all_private_chats"}
             group_scope = {"type": "all_group_chats"}
+            group_admin_scope = {"type": "all_chat_administrators"}
             default_scope = {"type": "default"}
 
             current_private = await self.tg.call("getMyCommands", scope=private_scope)
@@ -1534,7 +1580,20 @@ class AksakalBot:
             current_group = await self.tg.call("getMyCommands", scope=group_scope)
             if current_group:
                 await self.tg.call("deleteMyCommands", scope=group_scope)
-                print("bot profile synced: group commands hidden")
+                print("bot profile synced: non-admin group commands hidden")
+
+            current_group_admin = await self.tg.call("getMyCommands", scope=group_admin_scope)
+            normalized_group_admin = [
+                {"command": x.get("command", ""), "description": x.get("description", "")}
+                for x in (current_group_admin or [])
+            ]
+            if normalized_group_admin != group_admin_commands:
+                await self.tg.call(
+                    "setMyCommands",
+                    commands=group_admin_commands,
+                    scope=group_admin_scope,
+                )
+                print("bot profile synced: admin-only group commands")
 
             # Убираем старое глобальное меню, которое могло остаться от прошлой версии.
             current_default = await self.tg.call("getMyCommands", scope=default_scope)
