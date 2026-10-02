@@ -3229,6 +3229,24 @@ class AksakalBot:
             print(f"private settings callback delivery skipped {user_id}/{chat_id}: {exc}")
         await self.safe_delete_message(chat_id, int(msg.get("message_id", 0) or 0))
 
+    @staticmethod
+    def admin_group_help_text() -> str:
+        return (
+            "Команды администратора группы:\n"
+            "/settings — настройки Аксакала\n"
+            "/status — состояние и режим\n"
+            "/test — проверить AI\n"
+            "/on /off — включить или выключить\n"
+            "/hardness auto|normal|angry|super — жёсткость\n"
+            "/time 0|3|5|20|40|60|180 — задержка ответа\n"
+            "/silence 15..1440 — через сколько минут оживлять молчащий чат\n"
+            "/good /bad — оценить AI-ответ, командой в Reply\n\n"
+            "Игры и общие команды:\n"
+            "/games, /crocodile, /cities, /hangman, /quiz, /whoami, /stopgame\n"
+            "/rating, /mystats, /roast\n\n"
+            "Админ-настройки и диагностика отправляются только в личный чат."
+        )
+
     async def handle_command(self, msg: dict[str, Any], text: str):
         assert self.tg
         chat_id = int(msg["chat"]["id"])
@@ -3238,35 +3256,29 @@ class AksakalBot:
         arg = rest[0].strip() if rest else ""
 
         if cmd in {"/help", "/start"}:
-            await self.send_command_notice(
-                chat_id,
-                "Команды Аксакала:\n"
-                "/settings — настройки бота\n"
-                "/status — текущие настройки\n"
-                "/games — выбрать игру\n"
-                "/crocodile — Крокодил; hint/skip/stop — подсказка/пропуск/стоп\n"
-                "/cities — Города\n"
-                "/hangman — Виселица\n"
-                "/quiz — Викторина\n"
-                "/whoami — Кто я?\n"
-                "/stopgame — закончить текущую игру\n"
-                "/rating — общий вечный рейтинг\n"
-                "/rating week — рейтинг этой недели\n"
-                "/rating crocodile|cities|hangman|quiz|whoami — рейтинг конкретной игры\n"
-                "/mystats — личная игровая статистика и достижения\n"
-                "/roast — подколоть ответом на сообщение\n"
-                "/good, /bad — оценить реплику Аксакала\n"
-                "/test — проверить бота\n\n"
-                "Без команд тоже можно: «давай играть», «играть в города», «покажи рейтинг», "
-                "«моя статистика», «пропусти слово», «закончи игру».",
-            )
+            if await self.is_admin(chat_id, user_id):
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    self.admin_group_help_text(),
+                )
+            else:
+                await self.send_command_notice(
+                    chat_id,
+                    "Можно общаться обычными фразами. Игры: «давай играть», «играть в города», "
+                    "«давай в крокодила», «давай викторину». Рейтинг: «покажи рейтинг».",
+                    ttl=8,
+                )
             return
 
         if cmd in {"/settings", "/aksakal"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.send_command_notice(chat_id, "Настройки может менять администратор группы.")
                 return
-            await self.show_settings(chat_id)
+            try:
+                await self.show_private_group_settings(user_id, user_id, chat_id)
+                await self.sync_private_command_menu(user_id, user_id)
+            except Exception as exc:
+                print(f"private /settings delivery skipped {user_id}/{chat_id}: {exc}")
             return
 
         if cmd in {"/games", "/game", "/игры", "/игра"}:
@@ -3350,27 +3362,32 @@ class AksakalBot:
             return
 
         if cmd == "/test":
+            if not await self.is_admin(chat_id, user_id):
+                return
             health = await self.ai_health_text()
-            await self.send_command_notice(
+            await self.send_admin_private(
                 chat_id,
+                user_id,
                 "Аксакал жив.\n"
                 f"AI: {self.generator.provider_status()}\n"
                 f"{self.ai_diagnostics()}\n\n"
                 "Проверка API:\n"
                 f"{health}",
-                ttl=30,
             )
             return
 
-        if cmd in {"/status", "/aksakal"}:
+        if cmd == "/status":
+            if not await self.is_admin(chat_id, user_id):
+                return
             c = self.db.get_chat(chat_id) or {}
-            await self.send_command_notice(
+            await self.send_admin_private(
                 chat_id,
+                user_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
                 f"AI: {self.generator.provider_status()}\n"
                 f"Режим: {('AUTO — сам выбираю Нормальный / Злой / Супер злой') if c.get('hardness_mode','auto') == 'auto' else ('Нормальный' if int(c.get('fixed_hardness',3)) <= 2 else 'Злой' if int(c.get('fixed_hardness',3)) <= 4 else 'Супер злой')}\n"
-                f"Таймер тишины: {c.get('response_delay_seconds',20)} сек\n"
-                f"Молчание: {c.get('silence_minutes',180)} мин\n"
+                f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
+                f"Оживление после: {c.get('silence_minutes',180)} мин тишины\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений\n"
                 f"Обучение юмору: {self.db.feedback_stats(chat_id)['signals']} сигналов "
                 f"(баланс {self.db.feedback_stats(chat_id)['score']:+d})",
