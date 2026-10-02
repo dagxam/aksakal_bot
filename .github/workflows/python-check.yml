@@ -116,6 +116,27 @@ jobs:
               assert stats2["signals"] == 1
               assert db.humor_style_preferences(-100123, uid)["dry"] < 0
 
+              # Ручная тишина хранится в БД и переживает перезапуск процесса.
+              db.update_chat(-100123, manual_quiet=1)
+              assert db.get_chat(-100123)["manual_quiet"] == 1
+              db.update_chat(-100123, manual_quiet=0)
+              assert db.get_chat(-100123)["manual_quiet"] == 0
+
+              # Исключённый участник не попадает в цели автоматических реплик.
+              db.set_ignored_user(-100123, ali_id, True, added_by=uid)
+              assert db.is_ignored_user(-100123, ali_id)
+              assert ali_id not in {int(x["user_id"]) for x in db.active_users(-100123, 30 * 86400)}
+              ignored = db.ignored_users(-100123)
+              assert ignored and int(ignored[0]["user_id"]) == ali_id
+              db.set_ignored_user(-100123, ali_id, False, added_by=uid)
+              assert not db.is_ignored_user(-100123, ali_id)
+
+              # Разговорная команда тишины распознаётся без slash-команды.
+              assert AksakalBot.is_quiet_request("помолчи")
+              assert AksakalBot.is_quiet_request("Аксакал, помолчи")
+              assert AksakalBot.is_quiet_request("молчи пока")
+              assert not AksakalBot.is_quiet_request("он сказал мне помолчи")
+
               db.set_response_feedback(-100123, 3, ali_id, "admin", 2, "admin_good")
               manual = db.manual_feedback_examples(-100123, uid, 5)
               assert manual
