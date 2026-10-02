@@ -975,6 +975,9 @@ class AksakalBot:
             {"command": "hardness", "description": "Жёсткость auto/normal/angry/super"},
             {"command": "time", "description": "Задержка ответа"},
             {"command": "silence", "description": "Таймер оживления группы"},
+            {"command": "ignore", "description": "Исключить человека (Reply)"},
+            {"command": "unignore", "description": "Вернуть человека (Reply)"},
+            {"command": "ignored", "description": "Список исключённых"},
             {"command": "help", "description": "Все команды"},
         ]
 
@@ -1097,7 +1100,11 @@ class AksakalBot:
         )
 
     async def set_group_enabled_state(self, chat_id: int, enabled: bool):
-        self.db.update_chat(chat_id, enabled=1 if enabled else 0)
+        self.db.update_chat(
+            chat_id,
+            enabled=1 if enabled else 0,
+            manual_quiet=0 if enabled else int((self.db.get_chat(chat_id) or {}).get("manual_quiet", 0) or 0),
+        )
         if enabled:
             return
 
@@ -1858,8 +1865,37 @@ class AksakalBot:
             "/settings", "/aksakal", "/status", "/test",
             "/good", "/bad", "/on", "/off",
             "/hardness", "/h", "/time", "/t", "/frequency", "/silence",
+            "/ignore", "/unignore", "/ignored",
         }
         return 1 if cmd in admin_only else 6
+
+    @staticmethod
+    def is_quiet_request(text: str) -> bool:
+        import re
+        low = (text or "").lower().replace("ё", "е")
+        low = re.sub(r"[^a-zа-я0-9@_\s-]+", " ", low)
+        low = " ".join(low.split())
+        if not low:
+            return False
+        patterns = (
+            r"^(?:аксакал|бот)?\s*(?:помолчи|молчи)(?:\s+(?:пожалуйста|пока))?$",
+            r"^(?:помолчи|молчи)\s+(?:аксакал|бот)(?:\s+(?:пожалуйста|пока))?$",
+        )
+        return any(re.fullmatch(pattern, low) for pattern in patterns)
+
+    def message_directed_to_bot(self, chat_id: int, msg: dict[str, Any], text: str) -> bool:
+        reply = msg.get("reply_to_message") or {}
+        reply_message_id = int(reply.get("message_id", 0) or 0)
+        reply_from = reply.get("from") or {}
+        if self.bot_user_id and int(reply_from.get("id", 0) or 0) == self.bot_user_id:
+            return True
+        if reply_message_id and self.db.get_bot_response(chat_id, reply_message_id):
+            return True
+
+        low = (text or "").lower()
+        if self.bot_username and f"@{self.bot_username}" in low:
+            return True
+        return "аксакал" in low
 
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
@@ -1951,6 +1987,39 @@ class AksakalBot:
                 ))
             return
 
+        # Исключённый пользователь остаётся обычным участником группы, но Аксакал
+        # не отвечает ему, не принимает от него игровые ответы и не выбирает его сам.
+        if self.db.is_ignored_user(chat_id, user_id):
+            return
+
+        direct_to_bot = self.message_directed_to_bot(chat_id, msg, text)
+
+        # Разговорная команда без slash: "помолчи" переводит Аксакала в устойчивый
+        # режим тишины. Состояние хранится в БД и переживает перезапуск процесса.
+        if kind == "message" and self.is_quiet_request(text):
+            old_task = self.pending_reply_tasks.pop(chat_id, None)
+            if old_task and not old_task.done():
+                old_task.cancel()
+
+            active = self.active_game(chat_id)
+            if active:
+                await self.stop_specific_game(chat_id, active)
+
+            self.db.update_chat(chat_id, manual_quiet=1, silence_nudge_count=0)
+            await self.send_command_notice(
+                chat_id,
+                "Хорошо, молчу. Позовите меня по имени, через @упоминание или ответьте на моё сообщение — снова включусь.",
+                ttl=7,
+            )
+            return
+
+        current_chat = self.db.get_chat(chat_id) or {}
+        if current_chat.get("manual_quiet", 0):
+            if not direct_to_bot:
+                return
+            # Первое прямое обращение само снимает тишину и обрабатывается как обычное сообщение.
+            self.db.update_chat(chat_id, manual_quiet=0, silence_nudge_count=0)
+
         # Игры можно запускать обычной фразой, без slash-команд.
         if kind == "message" and text:
             game_request = self.detect_game_request(text)
@@ -2033,6 +2102,9 @@ class AksakalBot:
         display = " ".join(x for x in [user.get("first_name"), user.get("last_name")] if x).strip() or username or str(user_id)
         message_id = int(upd.get("message_id", 0) or 0)
         self.db.add_message(chat_id, message_id, user_id, username, display, "reaction", content)
+
+        if self.db.is_ignored_user(chat_id, user_id):
+            return
 
         if message_id and self.db.get_bot_response(chat_id, message_id):
             self.db.set_response_feedback(
@@ -3349,7 +3421,11 @@ class AksakalBot:
             "/hardness auto|normal|angry|super — жёсткость\n"
             "/time 0|3|5|20|40|60|180 — задержка ответа\n"
             "/silence 15..1440 — через сколько минут оживлять молчащий чат\n"
+            "/ignore — Reply на сообщение: исключить человека из общения с ботом\n"
+            "/unignore — Reply на сообщение: вернуть человека\n"
+            "/ignored — показать список исключённых\n"
             "/good /bad — оценить AI-ответ, командой в Reply\n\n"
+            "Фраза «помолчи» — бот замолкает до прямого обращения к нему.\n\n"
             "Игры и общие команды:\n"
             "/games, /crocodile, /cities, /hangman, /quiz, /whoami, /stopgame\n"
             "/rating, /mystats, /roast\n\n"
@@ -3363,6 +3439,10 @@ class AksakalBot:
         cmd, *rest = text.split(maxsplit=1)
         cmd = cmd.split("@")[0].lower()
         arg = rest[0].strip() if rest else ""
+
+        if self.db.is_ignored_user(chat_id, user_id):
+            if cmd not in {"/unignore", "/ignored"} or not await self.is_admin(chat_id, user_id):
+                return
 
         if cmd in {"/help", "/start"}:
             if await self.is_admin(chat_id, user_id):
@@ -3493,6 +3573,8 @@ class AksakalBot:
                 chat_id,
                 user_id,
                 f"Аксакал включён: {'да' if c.get('enabled',1) else 'нет'}\n"
+                f"Ручная тишина: {'да' if c.get('manual_quiet',0) else 'нет'}\n"
+                f"Исключено пользователей: {len(self.db.ignored_users(chat_id))}\n"
                 f"AI: {self.generator.provider_status()}\n"
                 f"Режим: {('AUTO — сам выбираю Нормальный / Злой / Супер злой') if c.get('hardness_mode','auto') == 'auto' else ('Нормальный' if int(c.get('fixed_hardness',3)) <= 2 else 'Злой' if int(c.get('fixed_hardness',3)) <= 4 else 'Супер злой')}\n"
                 f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
@@ -3538,6 +3620,62 @@ class AksakalBot:
                     else f"Запомнил: так отвечать хуже. Стиль «{style}» получил сильный минус."
                 ),
             )
+            return
+
+        if cmd in {"/ignore", "/unignore", "/ignored"}:
+            if not await self.is_admin(chat_id, user_id):
+                return
+
+            if cmd == "/ignored":
+                ignored = self.db.ignored_users(chat_id)
+                if not ignored:
+                    await self.send_admin_private(chat_id, user_id, "В этой группе никто не исключён из общения с Аксакалом.")
+                    return
+                rows = []
+                for item in ignored[:100]:
+                    name = item.get("display_name") or (f"@{item.get('username')}" if item.get("username") else "") or str(item["user_id"])
+                    username = f" (@{item['username']})" if item.get("username") and not str(name).startswith("@") else ""
+                    rows.append(f"• {name}{username} — ID {item['user_id']}")
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    "Исключены из общения с Аксакалом:\n" + "\n".join(rows),
+                )
+                return
+
+            reply = msg.get("reply_to_message") or {}
+            target_user = reply.get("from") or {}
+            target_id = int(target_user.get("id", 0) or 0)
+            if not target_id or target_user.get("is_bot"):
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    "Используй команду Reply на сообщение человека: /ignore или /unignore.",
+                )
+                return
+            if target_id == user_id:
+                await self.send_admin_private(chat_id, user_id, "Себя исключать не нужно.")
+                return
+
+            target_id = self.db.touch_user(chat_id, target_user, "admin")
+            target_name = " ".join(
+                x for x in [target_user.get("first_name"), target_user.get("last_name")] if x
+            ).strip() or target_user.get("username") or str(target_id)
+
+            if cmd == "/ignore":
+                self.db.set_ignored_user(chat_id, target_id, True, added_by=user_id)
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    f"{target_name} исключён из общения с Аксакалом. Бот не будет отвечать ему, принимать его игровые ответы или сам выбирать его для реплик.",
+                )
+            else:
+                self.db.set_ignored_user(chat_id, target_id, False, added_by=user_id)
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    f"{target_name} снова может общаться с Аксакалом.",
+                )
             return
 
         if cmd == "/profile":
@@ -3686,12 +3824,13 @@ class AksakalBot:
     async def maybe_emotional_response(self, chat_id: int, msg: dict[str, Any]):
         """Сбрасывает таймер на каждом новом сообщении и оценивает только последнее после паузы."""
         chat = self.db.get_chat(chat_id)
-        if not chat or not chat["enabled"]:
+        if not chat or not chat["enabled"] or chat.get("manual_quiet", 0):
             return False
 
         sender = msg.get("from", {})
-        if not int(sender.get("id", 0) or 0):
-            return
+        sender_id = int(sender.get("id", 0) or 0)
+        if not sender_id or self.db.is_ignored_user(chat_id, sender_id):
+            return False
 
         old_task = self.pending_reply_tasks.get(chat_id)
         if old_task and not old_task.done():
@@ -3713,12 +3852,12 @@ class AksakalBot:
 
             # Если за время ожидания пришло новое сообщение, старая задача уже отменена.
             chat = self.db.get_chat(chat_id)
-            if not chat or not chat.get("enabled", 1):
+            if not chat or not chat.get("enabled", 1) or chat.get("manual_quiet", 0):
                 return
 
             sender = msg.get("from", {})
             sender_id = int(sender.get("id", 0) or 0)
-            if not sender_id:
+            if not sender_id or self.db.is_ignored_user(chat_id, sender_id):
                 return
 
             context = self.db.recent_context(chat_id, config.context_message_limit)
@@ -3846,8 +3985,10 @@ class AksakalBot:
     ):
         assert self.tg
         chat = self.db.get_chat(chat_id)
-        if not chat or not chat["enabled"]:
-            return
+        if not chat or not chat["enabled"] or chat.get("manual_quiet", 0):
+            return False
+        if self.db.is_ignored_user(chat_id, target_user_id):
+            return False
         users = self.db.active_users(chat_id, 30 * 86400)
         target = next((u for u in users if u["user_id"] == target_user_id), None)
         if not target:
@@ -4010,6 +4151,8 @@ class AksakalBot:
 
         for chat in chats:
             chat_id = int(chat["chat_id"])
+            if chat.get("manual_quiet", 0):
+                continue
             if self.active_game(chat_id):
                 continue
 
