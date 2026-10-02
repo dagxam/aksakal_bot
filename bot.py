@@ -706,10 +706,19 @@ class AksakalBot:
             r"\bбезмозг\w*\b",
             r"\bклоун\w*\b",
             r"\bлох\w*\b",
+            r"\bбездар\w*\b",
+            r"\bтормоз\w*\b",
             r"\bзаткни\w*\b",
+            r"\bзаткнись\b",
+            r"\bпомолчи\b",
+            r"\bчто\s+ты\s+нес[её]ш\b",
+            r"\bче\s+ты\s+нес[её]ш\b",
+            r"\bч[её]\s+ты\s+нес[её]ш\b",
             r"\bбред\s+нес\w*\b",
             r"\bбесполез\w*\b",
             r"\bслаб\w*\b",
+            r"\bстарый\s+(?:дед|хрыч)\b",
+            r"\bдед\s*,?\s*(?:ты|заткни|помолчи)\b",
             r"\bпош[её]л\w*\b",
             r"\bнах\w*\b",
             r"\bсука\b",
@@ -912,6 +921,8 @@ class AksakalBot:
 
     @staticmethod
     def private_admin_commands() -> list[dict[str, str]]:
+        # Полный список канонических команд показывается в личке только
+        # пользователям, которые подтверждены админами хотя бы одной группы.
         return [
             {"command": "start", "description": "Панель управления"},
             {"command": "groups", "description": "Мои группы"},
@@ -919,7 +930,25 @@ class AksakalBot:
             {"command": "status", "description": "Состояние выбранной группы"},
             {"command": "stopgroup", "description": "Остановить в выбранной группе"},
             {"command": "startgroup", "description": "Запустить в выбранной группе"},
+            {"command": "games", "description": "Игровое меню в группе"},
+            {"command": "crocodile", "description": "Крокодил"},
+            {"command": "cities", "description": "Города"},
+            {"command": "hangman", "description": "Виселица"},
+            {"command": "quiz", "description": "Викторина"},
+            {"command": "whoami", "description": "Кто я?"},
+            {"command": "stopgame", "description": "Закончить текущую игру"},
+            {"command": "rating", "description": "Игровой рейтинг"},
+            {"command": "mystats", "description": "Моя игровая статистика"},
+            {"command": "roast", "description": "Подколоть сообщение (Reply в группе)"},
+            {"command": "good", "description": "Удачный ответ (Reply в группе)"},
+            {"command": "bad", "description": "Плохой ответ (Reply в группе)"},
             {"command": "test", "description": "Проверить AI"},
+            {"command": "on", "description": "Включить в выбранной группе"},
+            {"command": "off", "description": "Выключить в выбранной группе"},
+            {"command": "hardness", "description": "Жёсткость ответа"},
+            {"command": "time", "description": "Задержка ответа"},
+            {"command": "silence", "description": "Таймер оживления группы"},
+            {"command": "profile", "description": "Мой профиль обращения"},
             {"command": "help", "description": "Все команды администратора"},
         ]
 
@@ -1777,6 +1806,17 @@ class AksakalBot:
                 "Аксакал полностью активирован. Админ-настройки доступны в личном чате с ботом.",
             )
 
+    @staticmethod
+    def command_cleanup_delay(text: str) -> int:
+        """Админские служебные команды почти сразу исчезают из группы."""
+        cmd = (text or "").split(maxsplit=1)[0].split("@")[0].lower()
+        admin_only = {
+            "/settings", "/aksakal", "/status", "/test",
+            "/good", "/bad", "/on", "/off",
+            "/hardness", "/h", "/time", "/t", "/frequency", "/silence",
+        }
+        return 1 if cmd in admin_only else 6
+
     async def handle_message(self, msg: dict[str, Any]):
         chat = msg.get("chat", {})
         if chat.get("type") not in {"group", "supergroup"}:
@@ -1844,7 +1884,11 @@ class AksakalBot:
                     await self.handle_command(msg, text)
                 command_message_id = int(msg.get("message_id", 0) or 0)
                 if command_message_id:
-                    asyncio.create_task(self.delete_later(chat_id, command_message_id, delay=6))
+                    asyncio.create_task(self.delete_later(
+                        chat_id,
+                        command_message_id,
+                        delay=self.command_cleanup_delay(text),
+                    ))
             return
 
         if text.startswith("/"):
@@ -1856,7 +1900,11 @@ class AksakalBot:
             # затем тихо удаляется из чата. Панели/игровые сообщения при этом остаются.
             command_message_id = int(msg.get("message_id", 0) or 0)
             if command_message_id:
-                asyncio.create_task(self.delete_later(chat_id, command_message_id, delay=6))
+                asyncio.create_task(self.delete_later(
+                    chat_id,
+                    command_message_id,
+                    delay=self.command_cleanup_delay(text),
+                ))
             return
 
         # Игры можно запускать обычной фразой, без slash-команд.
