@@ -718,6 +718,16 @@ class AksakalBot:
         )
         return any(re.search(p, low) for p in patterns)
 
+    @staticmethod
+    def direct_attack_level(chat: dict[str, Any], direct_attack: bool) -> int | None:
+        if not direct_attack:
+            return None
+        mode = chat.get("hardness_mode", "auto")
+        fixed = int(chat.get("fixed_hardness", 3) or 3)
+        if mode == "auto" or (mode == "fixed" and fixed >= 5):
+            return 5
+        return None
+
     @classmethod
     def extract_learning_tokens(cls, text: str) -> list[str]:
         import re
@@ -3687,12 +3697,7 @@ class AksakalBot:
                         "Не используй случайную универсальную фразу."
                     )
 
-            attack_forced_level = None
-            if direct_attack:
-                mode = chat.get("hardness_mode", "auto")
-                fixed = int(chat.get("fixed_hardness", 3) or 3)
-                if mode == "auto" or (mode == "fixed" and fixed >= 5):
-                    attack_forced_level = 5
+            attack_forced_level = self.direct_attack_level(chat, direct_attack)
 
             sent_ok = await self.roast(
                 chat_id,
