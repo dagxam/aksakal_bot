@@ -3872,46 +3872,97 @@ class AksakalBot:
             except Exception as e:
                 print("silence worker:", e)
 
+    @staticmethod
+    def choose_silence_target(users: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not users:
+            return None
+        # Сначала выбираем среди тех, кого Аксакал трогал раньше всего.
+        # Пока есть ни разу не выбранные люди (last_roasted_at=0), повторов не будет.
+        ordered = sorted(
+            users,
+            key=lambda u: (
+                int(u.get("last_roasted_at") or 0),
+                int(u.get("last_spoken_at") or 0),
+            ),
+        )
+        oldest = int(ordered[0].get("last_roasted_at") or 0)
+        pool = [u for u in ordered if int(u.get("last_roasted_at") or 0) == oldest]
+        # Если у нескольких одинаковый возраст — выбираем случайно, чтобы поведение не было механическим.
+        return random.choice(pool[: min(8, len(pool))])
+
     async def check_silent_chats(self):
         now = int(time.time())
         with self.db.connect() as conn:
             chats = [dict(r) for r in conn.execute("SELECT * FROM chats WHERE enabled=1").fetchall()]
+
         for chat in chats:
-            if self.active_game(int(chat["chat_id"])):
+            chat_id = int(chat["chat_id"])
+            if self.active_game(chat_id):
                 continue
+
             silence_age = now - int(chat["last_activity_at"])
             bot_age = now - int(chat["last_bot_message_at"])
             threshold = int(chat["silence_minutes"]) * 60
             if silence_age < threshold or bot_age < threshold:
                 continue
-            users = self.db.active_users(int(chat["chat_id"]), 30 * 86400)
+
+            users = self.db.active_users(chat_id, 30 * 86400)
             if not users:
                 continue
 
-            # Предпочитаем тех, кого не трогали последний час. Если таких нет —
-            # всё равно выбираем кого-то: тишина больше не должна зависать на 6 часов.
-            fresh_candidates = [
-                u for u in users
-                if now - int(u["last_roasted_at"] or 0) > 3600
-            ]
-            candidates = fresh_candidates or users
-            target = random.choice(candidates[: min(20, len(candidates))])
+            nudge_count = int(chat.get("silence_nudge_count", 0) or 0)
+
+            # Каждый третий самостоятельный выход Аксакала — приглашение к игре.
+            # Остальные два — живые реплики разным участникам.
+            if nudge_count % 3 == 2:
+                prompts = (
+                    "🎮 Чего притихли? Давайте разбудим чат игрой. Выбирайте, во что рубимся.",
+                    "🎮 Разговор уснул. Есть лекарство: Крокодил, Города, Виселица, Викторина или «Кто я?» — выбирайте.",
+                    "🎮 Так, молодёжь, хватит молчать. Кто первый выбирает игру?",
+                )
+                text = random.choice(prompts)
+                sent = await self.tg.send(
+                    chat_id,
+                    text,
+                    reply_markup=self.game_center_keyboard(),
+                )
+                if isinstance(sent, dict) and sent.get("message_id"):
+                    self.db.add_bot_message(
+                        chat_id,
+                        int(sent["message_id"]),
+                        text,
+                    )
+                self.db.update_chat(
+                    chat_id,
+                    last_bot_message_at=now,
+                    silence_nudge_count=nudge_count + 1,
+                )
+                continue
+
+            target = self.choose_silence_target(users)
+            if not target:
+                continue
 
             silence_level = None
             if chat.get("hardness_mode", "auto") == "auto":
-                silence_level = random.choices([1, 3, 5], weights=[30, 50, 20], k=1)[0]
+                silence_level = random.choices([1, 3, 5], weights=[25, 50, 25], k=1)[0]
 
-            await self.roast(
-                int(chat["chat_id"]),
+            sent_ok = await self.roast(
+                chat_id,
                 int(target["user_id"]),
-                "в группе давно тишина. Сам выбери живой способ расшевелить компанию: можешь мягко позвать "
-                "выбранного человека, иронично зацепить его, устроить короткий жёсткий подкол или задать ему "
-                "провокационный, но безопасный вопрос. Не повторяй фразы про саму «тишину» каждый раз; придумай "
-                "конкретный повод, используя реальные привычки и память группы.",
-                source_text="нужно оживить молчащую группу",
+                "в группе давно тишина. Ты сам решил оживить чат и выбрал конкретного человека. "
+                "Обратись именно к нему по имени и скажи живую реплику: задай вопрос, вспомни связанную с ним тему "
+                "из памяти группы, слегка поддень или позови остальных в разговор. Не говори каждый раз одинаково "
+                "про тишину и не используй шаблон «куда пропал».",
+                source_text="нужно оживить молчащую группу и втянуть выбранного участника в разговор",
                 source_kind="silence",
                 forced_level=silence_level,
             )
+            if sent_ok:
+                self.db.update_chat(
+                    chat_id,
+                    silence_nudge_count=nudge_count + 1,
+                )
 
 
 if __name__ == "__main__":
