@@ -3687,6 +3687,13 @@ class AksakalBot:
                         "Не используй случайную универсальную фразу."
                     )
 
+            attack_forced_level = None
+            if direct_attack:
+                mode = chat.get("hardness_mode", "auto")
+                fixed = int(chat.get("fixed_hardness", 3) or 3)
+                if mode == "auto" or (mode == "fixed" and fixed >= 5):
+                    attack_forced_level = 5
+
             sent_ok = await self.roast(
                 chat_id,
                 sender_id,
@@ -3695,6 +3702,7 @@ class AksakalBot:
                 reply_to_message_id=msg.get("message_id"),
                 source_text=source_text,
                 source_kind=source_kind,
+                forced_level=attack_forced_level,
             )
 
             # Кратковременный сбой/лимит AI не должен навсегда съедать реплику.
@@ -3709,6 +3717,7 @@ class AksakalBot:
                     reply_to_message_id=msg.get("message_id"),
                     source_text=source_text,
                     source_kind=source_kind,
+                    forced_level=attack_forced_level,
                 )
         except asyncio.CancelledError:
             return
