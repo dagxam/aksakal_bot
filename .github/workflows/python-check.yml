@@ -136,11 +136,36 @@ jobs:
               db.set_ignored_user(-100123, ali_id, False, added_by=uid)
               assert not db.is_ignored_user(-100123, ali_id)
 
-              # Разговорная команда тишины распознаётся без slash-команды.
-              assert AksakalBot.is_quiet_request("помолчи")
-              assert AksakalBot.is_quiet_request("Аксакал, помолчи")
-              assert AksakalBot.is_quiet_request("молчи пока")
-              assert not AksakalBot.is_quiet_request("он сказал мне помолчи")
+              # Разговорная пауза распознаётся без slash-команды.
+              for phrase in (
+                  "помолчи",
+                  "Аксакал, помолчи",
+                  "молчи пока",
+                  "остановись",
+                  "Аксакал остановись",
+                  "прекрати",
+                  "подожди",
+                  "хватит",
+                  "отдохни немного",
+              ):
+                  assert AksakalBot.is_quiet_request(phrase), phrase
+
+              for phrase in (
+                  "он сказал мне помолчи",
+                  "подожди меня возле дома",
+                  "прекрати спорить с ним",
+                  "хватит ли нам еды",
+              ):
+                  assert not AksakalBot.is_quiet_request(phrase), phrase
+
+              for phrase in (
+                  "Аксакал где ты",
+                  "акскал где ты",
+                  "Аксакал не молчи",
+                  "акскал вернись",
+                  "Аксакал ты тут",
+              ):
+                  assert AksakalBot.is_wake_request(phrase), phrase
 
               db.set_response_feedback(-100123, 3, ali_id, "admin", 2, "admin_good")
               manual = db.manual_feedback_examples(-100123, uid, 5)
@@ -771,6 +796,136 @@ jobs:
           assert AksakalBot.looks_like_attack("бездарь")
 
           print("silence/attack/admin-command smoke test OK")
+          PY
+
+      - name: Conversational pause and wake smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+
+          class FakeTelegram:
+              def __init__(self):
+                  self.messages = []
+              async def send(self, chat_id, text, reply_to_message_id=None, reply_markup=None):
+                  self.messages.append({
+                      "chat_id": chat_id,
+                      "text": text,
+                      "reply_to_message_id": reply_to_message_id,
+                  })
+                  return {"message_id": 9000 + len(self.messages)}
+              async def delete(self, chat_id, message_id):
+                  return True
+
+          async def main():
+              fd, path = tempfile.mkstemp(suffix=".db")
+              os.close(fd)
+              try:
+                  db = Database(path)
+                  chat_id = -100991
+                  db.ensure_chat(chat_id, "Пауза", 3, 10, 180)
+
+                  bot = object.__new__(AksakalBot)
+                  bot.db = db
+                  bot.tg = FakeTelegram()
+                  bot.pending_reply_tasks = {}
+                  bot.game_tasks = {}
+                  bot.game_timer_tasks = {}
+                  bot.bot_user_id = 999
+                  bot.bot_username = "aksakal_test_bot"
+                  bot.generator = type("G", (), {"enabled": False})()
+
+                  notices = []
+                  considered = []
+
+                  async def fake_notice(chat_id, text, **kwargs):
+                      notices.append(text)
+                      return {"message_id": 500}
+                  async def fake_consider(chat_id, msg):
+                      considered.append(msg.get("text") or "")
+                      return True
+
+                  bot.send_command_notice = fake_notice
+                  bot.maybe_emotional_response = fake_consider
+
+                  # "Остановись" включает устойчивую паузу.
+                  await bot.handle_message({
+                      "message_id": 1,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 1, "first_name": "Али"},
+                      "text": "остановись",
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 1
+                  assert notices[-1] == "Ладно, дам чуть отдохнуть 😄"
+                  assert not considered
+
+                  # Обычный разговор во время паузы игнорируется.
+                  await bot.handle_message({
+                      "message_id": 2,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 2, "first_name": "Магомед"},
+                      "text": "кто сегодня придёт?",
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 1
+                  assert not considered
+
+                  # Частая опечатка в имени тоже пробуждает и фраза обрабатывается.
+                  await bot.handle_message({
+                      "message_id": 3,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 2, "first_name": "Магомед"},
+                      "text": "акскал где ты",
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 0
+                  assert considered[-1] == "акскал где ты"
+
+                  # Снова ставим паузу и снимаем её Reply на сообщение самого бота.
+                  await bot.handle_message({
+                      "message_id": 4,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 1, "first_name": "Али"},
+                      "text": "подожди",
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 1
+
+                  await bot.handle_message({
+                      "message_id": 5,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 1, "first_name": "Али"},
+                      "text": "ты тут?",
+                      "reply_to_message": {
+                          "message_id": 88,
+                          "from": {"id": 999, "is_bot": True, "first_name": "Аксакал"},
+                          "text": "старая реплика",
+                      },
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 0
+                  assert considered[-1] == "ты тут?"
+
+                  # @mention тоже считается прямым обращением.
+                  db.update_chat(chat_id, manual_quiet=1)
+                  await bot.handle_message({
+                      "message_id": 6,
+                      "chat": {"id": chat_id, "type": "supergroup", "title": "Пауза"},
+                      "from": {"id": 3, "first_name": "Расул"},
+                      "text": "@aksakal_test_bot не молчи",
+                  })
+                  assert db.get_chat(chat_id)["manual_quiet"] == 0
+                  assert considered[-1] == "@aksakal_test_bot не молчи"
+
+              finally:
+                  for suffix in ("", "-shm", "-wal"):
+                      try:
+                          os.remove(path + suffix)
+                      except FileNotFoundError:
+                          pass
+
+          asyncio.run(main())
+          print("conversational pause/wake smoke test OK")
           PY
 
       - name: Live silence reactivation smoke test
