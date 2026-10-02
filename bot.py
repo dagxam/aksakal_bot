@@ -2033,11 +2033,16 @@ class AksakalBot:
                 await self.stop_specific_game(chat_id, active)
 
             self.db.update_chat(chat_id, manual_quiet=1, silence_nudge_count=0)
-            await self.send_command_notice(
-                chat_id,
-                "Ладно, дам чуть отдохнуть 😄",
-                ttl=7,
-            )
+            pause_text = "Ладно, дам чуть отдохнуть 😄"
+            sent = await self.tg.send(chat_id, pause_text)
+            if isinstance(sent, dict) and sent.get("message_id"):
+                self.db.add_bot_message(
+                    chat_id,
+                    int(sent["message_id"]),
+                    pause_text,
+                    reply_to_message_id=int(msg.get("message_id", 0) or 0) or None,
+                    reply_to_user_id=user_id,
+                )
             return
 
         current_chat = self.db.get_chat(chat_id) or {}
