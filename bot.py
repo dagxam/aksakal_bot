@@ -1831,6 +1831,9 @@ class AksakalBot:
             reply_to_message_id=reply_to_message_id,
             reply_to_user_id=reply_to_user_id,
         )
+        # Любая новая активность людей начинает новый цикл оживления:
+        # сначала Аксакал обращается к разным участникам, затем предлагает игру.
+        self.db.update_chat(chat_id, silence_nudge_count=0)
 
         current_chat = self.db.get_chat(chat_id) or {}
         if not current_chat.get("enabled", 1):
