@@ -19,6 +19,7 @@ class TelegramAPI:
     def __init__(self, token: str):
         self.base = f"https://api.telegram.org/bot{token}"
         self.session: aiohttp.ClientSession | None = None
+        self.on_sent: Any = None
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
@@ -48,7 +49,13 @@ class TelegramAPI:
             payload["reply_parameters"] = {"message_id": reply_to_message_id, "allow_sending_without_reply": True}
         if reply_markup:
             payload["reply_markup"] = reply_markup
-        return await self.call("sendMessage", **payload)
+        result = await self.call("sendMessage", **payload)
+        if self.on_sent:
+            try:
+                self.on_sent(chat_id, result, text, reply_to_message_id)
+            except Exception as exc:
+                print(f"sent-message tracking skipped {chat_id}: {exc}")
+        return result
 
     async def edit(self, chat_id: int, message_id: int, text: str, reply_markup: dict[str, Any] | None = None):
         payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "disable_web_page_preview": True}
@@ -58,6 +65,12 @@ class TelegramAPI:
 
     async def delete(self, chat_id: int, message_id: int):
         return await self.call("deleteMessage", chat_id=chat_id, message_id=message_id)
+
+    async def delete_many(self, chat_id: int, message_ids: list[int]):
+        ids = [int(x) for x in message_ids if int(x)]
+        if not ids:
+            return True
+        return await self.call("deleteMessages", chat_id=chat_id, message_ids=ids)
 
 
 class AksakalBot:
@@ -1546,9 +1559,38 @@ class AksakalBot:
             return
         try:
             await self.tg.delete(chat_id, message_id)
+            self.db.forget_messages(chat_id, [message_id])
         except Exception as exc:
             # В группе удаление пользовательской команды требует права delete_messages.
             print(f"delete message skipped {chat_id}/{message_id}: {exc}")
+
+    async def delete_tracked_messages(self, chat_id: int, message_ids: list[int]) -> int:
+        assert self.tg
+        ids = list(dict.fromkeys(int(x) for x in message_ids if int(x)))
+        if not ids:
+            return 0
+
+        deleted: list[int] = []
+        for start in range(0, len(ids), 100):
+            batch = ids[start:start + 100]
+            try:
+                await self.tg.delete_many(chat_id, batch)
+                deleted.extend(batch)
+                continue
+            except Exception as batch_exc:
+                print(f"batch delete fallback {chat_id}: {batch_exc}")
+
+            # Если один ID мешает пакету, удаляем остальные по одному.
+            for message_id in batch:
+                try:
+                    await self.tg.delete(chat_id, message_id)
+                    deleted.append(message_id)
+                except Exception as exc:
+                    print(f"delete message skipped {chat_id}/{message_id}: {exc}")
+
+        if deleted:
+            self.db.forget_messages(chat_id, deleted)
+        return len(deleted)
 
     async def delete_later(self, chat_id: int, message_id: int, delay: int = 12):
         try:
@@ -1619,9 +1661,31 @@ class AksakalBot:
                 if answer:
                     self.set_game_timer(chat_id, self.whoami_round_timer(chat_id, answer))
 
+    def record_outgoing_message(
+        self,
+        chat_id: int,
+        sent: Any,
+        text: str,
+        reply_to_message_id: int | None = None,
+    ):
+        # Храним ID всех сообщений Аксакала в группах, чтобы по просьбе
+        # администратора можно было удалить его доступную историю.
+        if chat_id >= 0 or not isinstance(sent, dict):
+            return
+        message_id = int(sent.get("message_id", 0) or 0)
+        if not message_id:
+            return
+        self.db.add_bot_message(
+            chat_id,
+            message_id,
+            text,
+            reply_to_message_id=reply_to_message_id,
+        )
+
     async def run(self):
         async with TelegramAPI(config.telegram_token) as tg:
             self.tg = tg
+            tg.on_sent = self.record_outgoing_message
             # Long polling не работает, пока у бота установлен webhook.
             await tg.call("deleteWebhook", drop_pending_updates=False)
 
@@ -1907,6 +1971,55 @@ class AksakalBot:
         )
         return bool(re.fullmatch(rf"{name}\s+{wake}", low))
 
+    @classmethod
+    def detect_delete_request(cls, text: str) -> str | None:
+        import re
+        low = cls.normalize_control_phrase(text)
+        if not low:
+            return None
+
+        own = (
+            r"удали\s+(?:все\s+)?мои\s+сообщени(?:я|е)",
+            r"удали\s+(?:все\s+)?сообщени(?:я|е)\s+мои",
+        )
+        bot = (
+            r"удали\s+(?:все\s+)?твои\s+сообщения",
+            r"удали\s+(?:все\s+)?свои\s+сообщения",
+            r"удали\s+(?:все\s+)?сообщения\s+(?:бота|аксакала|акскала)",
+        )
+        target = (
+            r"удали\s+(?:все\s+)?сообщения\s+пользователя",
+            r"удали\s+(?:все\s+)?его\s+сообщения",
+            r"удали\s+(?:все\s+)?ее\s+сообщения",
+        )
+        if any(re.fullmatch(p, low) for p in own):
+            return "mine"
+        if any(re.fullmatch(p, low) for p in bot):
+            return "bot"
+        if any(re.fullmatch(p, low) for p in target):
+            return "user"
+        return None
+
+    @classmethod
+    def detect_replied_gender_profile(cls, text: str) -> str | None:
+        import re
+        low = cls.normalize_control_phrase(text)
+        if not low:
+            return None
+        female = (
+            r"это\s+(?:девушка|женщина)",
+            r"она\s+(?:девушка|женщина)",
+        )
+        male = (
+            r"это\s+(?:парень|мужчина)",
+            r"он\s+(?:парень|мужчина)",
+        )
+        if any(re.fullmatch(p, low) for p in female):
+            return "female"
+        if any(re.fullmatch(p, low) for p in male):
+            return "male"
+        return None
+
     def message_directed_to_bot(self, chat_id: int, msg: dict[str, Any], text: str) -> bool:
         import re
         reply = msg.get("reply_to_message") or {}
@@ -2014,9 +2127,61 @@ class AksakalBot:
                 ))
             return
 
+        # Разговорные команды очистки. Свою историю может убрать любой участник.
+        # Чужую историю и сообщения самого Аксакала очищает только администратор.
+        delete_request = self.detect_delete_request(text) if kind == "message" else None
+        if delete_request:
+            if delete_request == "mine":
+                ids = self.db.deletable_message_ids(chat_id, user_id=user_id)
+                await self.delete_tracked_messages(chat_id, ids)
+                await self.send_command_notice(
+                    chat_id,
+                    "Готово. Удалил доступные сообщения, которые успел увидеть.",
+                    ttl=5,
+                )
+                return
+
+            if not await self.is_admin(chat_id, user_id):
+                await self.send_command_notice(chat_id, "Такое удаление доступно только администратору.", ttl=6)
+                return
+
+            if delete_request == "bot":
+                ids = self.db.deletable_message_ids(chat_id, bot_only=True)
+                await self.delete_tracked_messages(chat_id, ids)
+                await self.send_command_notice(chat_id, "Готово. Удалил доступные сообщения Аксакала.", ttl=5)
+                return
+
+            target = reply.get("from") or {}
+            target_id = int(target.get("id", 0) or 0)
+            if not target_id or target.get("is_bot"):
+                await self.send_command_notice(
+                    chat_id,
+                    "Ответь этой фразой Reply на сообщение нужного пользователя.",
+                    ttl=7,
+                )
+                return
+            ids = self.db.deletable_message_ids(chat_id, user_id=target_id)
+            await self.delete_tracked_messages(chat_id, ids)
+            await self.send_command_notice(chat_id, "Готово. Удалил доступные сообщения этого пользователя.", ttl=5)
+            return
+
         # Исключённый пользователь остаётся обычным участником группы, но Аксакал
         # не отвечает ему, не принимает от него игровые ответы и не выбирает его сам.
         if self.db.is_ignored_user(chat_id, user_id):
+            return
+
+        # Явное уточнение пола другого участника принимаем только через Reply
+        # на его сообщение. Никаких выводов по имени, фото или манере речи.
+        replied_profile = self.detect_replied_gender_profile(text) if kind == "message" else None
+        if replied_profile and reply_to_user_id and reply_from and not reply_from.get("is_bot"):
+            target_id = self.db.touch_user(chat_id, reply_from, "profile")
+            self.db.set_profile(chat_id, target_id, replied_profile)
+            label = "девушка" if replied_profile == "female" else "парень"
+            await self.send_command_notice(
+                chat_id,
+                f"Понял, запомнил: {label}. Буду учитывать это в обращении.",
+                ttl=7,
+            )
             return
 
         direct_to_bot = self.message_directed_to_bot(chat_id, msg, text)
