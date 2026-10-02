@@ -823,6 +823,29 @@ class AksakalBot:
 
 
     @staticmethod
+    def private_basic_keyboard() -> dict[str, Any]:
+        return {
+            "keyboard": [
+                [
+                    {
+                        "text": "🔎 Выбрать группу в Telegram",
+                        "request_chat": {
+                            "request_id": 7001,
+                            "chat_is_channel": False,
+                            "bot_is_member": True,
+                            "request_title": True,
+                            "request_username": True,
+                            "request_photo": False,
+                        },
+                    }
+                ],
+                [{"text": "ℹ️ Помощь"}],
+            ],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+
+    @staticmethod
     def private_main_keyboard() -> dict[str, Any]:
         return {
             "keyboard": [
@@ -840,6 +863,7 @@ class AksakalBot:
                         },
                     }
                 ],
+                [{"text": "⚙️ Настройки группы"}],
                 [
                     {"text": "🛑 Остановить в группе"},
                     {"text": "▶️ Запустить в группе"},
@@ -854,27 +878,42 @@ class AksakalBot:
         }
 
     @staticmethod
-    def private_group_request_keyboard(request_id: int = 7001) -> dict[str, Any]:
-        return {
-            "keyboard": [
-                [
-                    {
-                        "text": "🔎 Выбрать уже добавленную группу",
-                        "request_chat": {
-                            "request_id": request_id,
-                            "chat_is_channel": False,
-                            "bot_is_member": True,
-                            "request_title": True,
-                            "request_username": True,
-                            "request_photo": False,
-                        },
-                    }
-                ],
-                [{"text": "📋 Мои группы"}],
-            ],
-            "resize_keyboard": True,
-            "one_time_keyboard": True,
-        }
+    def private_admin_commands() -> list[dict[str, str]]:
+        return [
+            {"command": "start", "description": "Панель управления"},
+            {"command": "groups", "description": "Мои группы"},
+            {"command": "settings", "description": "Настройки выбранной группы"},
+            {"command": "status", "description": "Состояние группы"},
+            {"command": "stopgroup", "description": "Остановить в выбранной группе"},
+            {"command": "startgroup", "description": "Запустить в выбранной группе"},
+            {"command": "test", "description": "Проверить AI"},
+            {"command": "help", "description": "Все доступные команды"},
+        ]
+
+    async def sync_private_command_menu(self, private_chat_id: int, user_id: int) -> bool:
+        """Показывает расширенное меню команд только подтверждённым администраторам групп."""
+        assert self.tg
+        groups = await self.manageable_groups(user_id)
+        scope = {"type": "chat", "chat_id": private_chat_id}
+        if groups:
+            desired = self.private_admin_commands()
+            try:
+                current = await self.tg.call("getMyCommands", scope=scope)
+                normalized = [
+                    {"command": x.get("command", ""), "description": x.get("description", "")}
+                    for x in (current or [])
+                ]
+                if normalized != desired:
+                    await self.tg.call("setMyCommands", commands=desired, scope=scope)
+            except Exception as e:
+                print(f"private admin command sync skipped {private_chat_id}: {e}")
+            return True
+
+        try:
+            await self.tg.call("deleteMyCommands", scope=scope)
+        except Exception:
+            pass
+        return False
 
     async def manageable_groups(self, user_id: int, enabled: bool | None = None) -> list[dict[str, Any]]:
         groups: list[dict[str, Any]] = []
