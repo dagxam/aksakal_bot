@@ -688,6 +688,172 @@ jobs:
           print("existing group recovery smoke test OK")
           PY
 
+      - name: Silence rotation, attack escalation and admin command scope smoke test
+        run: |
+          python - <<'PY'
+          from bot import AksakalBot
+
+          users = [
+              {"user_id": 1, "last_roasted_at": 300, "last_spoken_at": 50},
+              {"user_id": 2, "last_roasted_at": 0, "last_spoken_at": 60},
+              {"user_id": 3, "last_roasted_at": 0, "last_spoken_at": 70},
+          ]
+          target = AksakalBot.choose_silence_target(users)
+          assert target["user_id"] in {2, 3}
+          assert target["last_roasted_at"] == 0
+
+          assert AksakalBot.direct_attack_level(
+              {"hardness_mode": "auto", "fixed_hardness": 3},
+              True,
+          ) == 5
+          assert AksakalBot.direct_attack_level(
+              {"hardness_mode": "fixed", "fixed_hardness": 5},
+              True,
+          ) == 5
+          assert AksakalBot.direct_attack_level(
+              {"hardness_mode": "fixed", "fixed_hardness": 3},
+              True,
+          ) is None
+          assert AksakalBot.direct_attack_level(
+              {"hardness_mode": "auto", "fixed_hardness": 3},
+              False,
+          ) is None
+
+          admin_names = {x["command"] for x in AksakalBot.group_admin_commands()}
+          for expected in {
+              "settings", "status", "games", "crocodile", "cities", "hangman",
+              "quiz", "whoami", "stopgame", "rating", "mystats", "roast",
+              "good", "bad", "test", "on", "off", "hardness", "time", "silence", "help",
+          }:
+              assert expected in admin_names
+
+          private_names = {x["command"] for x in AksakalBot.private_admin_commands()}
+          for expected in {"start", "groups", "settings", "status", "stopgroup", "startgroup", "test", "help"}:
+              assert expected in private_names
+
+          print("silence/attack/admin-command smoke test OK")
+          PY
+
+      - name: Live game engines smoke test
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+
+          class FakeTelegram:
+              def __init__(self):
+                  self.messages = []
+
+              async def send(self, chat_id, text, reply_to_message_id=None, reply_markup=None):
+                  self.messages.append({
+                      "chat_id": chat_id,
+                      "text": text,
+                      "reply_to_message_id": reply_to_message_id,
+                      "reply_markup": reply_markup,
+                  })
+                  return {"message_id": len(self.messages)}
+
+              async def call(self, method, **payload):
+                  if method == "answerCallbackQuery":
+                      return True
+                  raise AssertionError(f"unexpected Telegram method: {method}")
+
+              async def edit(self, *args, **kwargs):
+                  return True
+
+              async def delete(self, *args, **kwargs):
+                  return True
+
+          async def main():
+              fd, path = tempfile.mkstemp(suffix=".db")
+              os.close(fd)
+              try:
+                  db = Database(path)
+                  chat_id = -100555
+                  db.ensure_chat(chat_id, "Игровой тест", 3, 10, 180)
+
+                  bot = object.__new__(AksakalBot)
+                  bot.db = db
+                  bot.tg = FakeTelegram()
+                  bot.pending_reply_tasks = {}
+                  bot.game_tasks = {}
+                  bot.game_timer_tasks = {}
+                  bot.bot_user_id = 999
+                  bot.bot_username = "aksakal_test"
+
+                  # Крокодил: запускается, принимает точный ответ, начисляет очко.
+                  await bot.start_crocodile_game(chat_id)
+                  assert bot.active_game(chat_id) == "crocodile"
+                  croc = db.get_crocodile_game(chat_id)
+                  assert croc and croc["word"]
+                  await bot.handle_crocodile_guess(chat_id, 1, "Али", croc["word"], "message")
+                  assert db.game_session_top(chat_id, "crocodile")[0]["score"] == 1
+                  await bot.stop_specific_game(chat_id, "crocodile")
+                  await asyncio.sleep(0)
+
+                  # Города: находим допустимый ответ на требуемую букву.
+                  await bot.start_city_game(chat_id)
+                  assert bot.active_game(chat_id) == "cities"
+                  city_state = db.get_city_game(chat_id)
+                  required = str(city_state["required_letter"])
+                  used = {
+                      AksakalBot.normalize_city_name(x)
+                      for x in str(city_state["used_cities"]).splitlines()
+                      if x.strip()
+                  }
+                  city_answer = next(
+                      city for city in AksakalBot.CITY_NAMES
+                      if AksakalBot.normalize_city_name(city).startswith(required)
+                      and AksakalBot.normalize_city_name(city) not in used
+                  )
+                  await bot.handle_city_guess(chat_id, 2, "Магомед", city_answer, "message")
+                  assert db.game_session_top(chat_id, "cities")[0]["score"] == 1
+                  await bot.stop_specific_game(chat_id, "cities")
+                  await asyncio.sleep(0)
+
+                  # Виселица: целое слово засчитывается.
+                  await bot.start_hangman_game(chat_id)
+                  assert bot.active_game(chat_id) == "hangman"
+                  hang = db.get_hangman_game(chat_id)
+                  await bot.handle_hangman_guess(chat_id, 3, "Расул", hang["word"], "message")
+                  assert db.game_session_top(chat_id, "hangman")[0]["score"] == 1
+                  await bot.stop_specific_game(chat_id, "hangman")
+                  await asyncio.sleep(0)
+
+                  # Викторина: текст правильного ответа засчитывается.
+                  await bot.start_quiz_game(chat_id)
+                  assert bot.active_game(chat_id) == "quiz"
+                  quiz = db.get_quiz_game(chat_id)
+                  await bot.handle_quiz_guess(chat_id, 4, "Патимат", quiz["answer"], "message")
+                  assert db.game_session_top(chat_id, "quiz")[0]["score"] == 1
+                  await bot.stop_specific_game(chat_id, "quiz")
+                  await asyncio.sleep(0)
+
+                  # Кто я?: точный ответ засчитывается.
+                  await bot.start_whoami_game(chat_id)
+                  assert bot.active_game(chat_id) == "whoami"
+                  who = db.get_whoami_game(chat_id)
+                  await bot.handle_whoami_guess(chat_id, 5, "Мурад", who["answer"], "message")
+                  assert db.game_session_top(chat_id, "whoami")[0]["score"] == 1
+                  await bot.stop_specific_game(chat_id, "whoami")
+                  await asyncio.sleep(0)
+
+                  assert len(bot.tg.messages) >= 10
+              finally:
+                  for suffix in ("", "-shm", "-wal"):
+                      try:
+                          os.remove(path + suffix)
+                      except FileNotFoundError:
+                          pass
+
+          asyncio.run(main())
+          print("live game engines smoke test OK")
+          PY
+
       - name: Environment diagnostics smoke test
         run: |
           python - <<'PY'
