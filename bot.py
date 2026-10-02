@@ -3396,15 +3396,15 @@ class AksakalBot:
 
         if cmd in {"/good", "/bad"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.send_command_notice(chat_id, "Обучать Аксакала вручную может только администратор группы.")
                 return
 
             reply = msg.get("reply_to_message") or {}
             reply_message_id = int(reply.get("message_id", 0) or 0)
             response_meta = self.db.get_bot_response(chat_id, reply_message_id) if reply_message_id else None
             if not response_meta:
-                await self.send_command_notice(
+                await self.send_admin_private(
                     chat_id,
+                    user_id,
                     "Ответь /good или /bad именно на AI-реплику Аксакала, которую хочешь оценить.",
                 )
                 return
@@ -3420,18 +3420,15 @@ class AksakalBot:
                 detail=detail,
             )
             style = response_meta.get("humor_style") or "none"
-            if cmd == "/good":
-                await self.send_command_notice(
-                    chat_id,
-                    f"Запомнил: такой ответ удачный. Стиль «{style}» получил сильный плюс.",
-                    reply_to_message_id=reply_message_id,
-                )
-            else:
-                await self.send_command_notice(
-                    chat_id,
-                    f"Запомнил: так отвечать хуже. Стиль «{style}» получил сильный минус.",
-                    reply_to_message_id=reply_message_id,
-                )
+            await self.send_admin_private(
+                chat_id,
+                user_id,
+                (
+                    f"Запомнил: такой ответ удачный. Стиль «{style}» получил сильный плюс."
+                    if cmd == "/good"
+                    else f"Запомнил: так отвечать хуже. Стиль «{style}» получил сильный минус."
+                ),
+            )
             return
 
         if cmd == "/profile":
@@ -3447,15 +3444,17 @@ class AksakalBot:
 
         if cmd in {"/on", "/off", "/hardness", "/h", "/time", "/t", "/frequency", "/silence"}:
             if not await self.is_admin(chat_id, user_id):
-                await self.send_command_notice(chat_id, "Эту настройку может менять администратор группы.")
                 return
             if cmd == "/on":
-                self.db.update_chat(chat_id, enabled=1)
-                await self.send_command_notice(chat_id, "Аксакал проснулся.")
-                await self.show_settings(chat_id)
+                await self.set_group_enabled_state(chat_id, True)
+                await self.send_admin_private(chat_id, user_id, "Аксакал включён в этой группе.")
+                try:
+                    await self.show_private_group_settings(user_id, user_id, chat_id)
+                except Exception as exc:
+                    print(f"private /on settings skipped {user_id}/{chat_id}: {exc}")
             elif cmd == "/off":
-                self.db.update_chat(chat_id, enabled=0)
-                await self.send_command_notice(chat_id, "Аксакал пока помолчит.")
+                await self.set_group_enabled_state(chat_id, False)
+                await self.send_admin_private(chat_id, user_id, "Аксакал выключен в этой группе и будет молчать.")
             elif cmd in {"/hardness", "/h"}:
                 value = arg.lower()
                 aliases = {
@@ -3467,46 +3466,57 @@ class AksakalBot:
                 selected = aliases.get(value)
                 if selected == "auto":
                     self.db.update_chat(chat_id, hardness_mode="auto")
-                    await self.send_command_notice(chat_id, "Режим: AUTO. Аксакал сам выбирает Нормальный, Злой или Супер злой по разговору.")
+                    await self.send_admin_private(
+                        chat_id,
+                        user_id,
+                        "Режим: AUTO. При прямом наезде Аксакал автоматически переходит в максимально жёсткую манеру.",
+                    )
                 elif selected in {"normal", "angry", "super"}:
                     mapped = {"normal": 1, "angry": 3, "super": 5}[selected]
                     label = {"normal": "Нормальный", "angry": "Злой", "super": "Супер злой"}[selected]
                     self.db.update_chat(chat_id, hardness_mode="fixed", fixed_hardness=mapped)
-                    await self.send_command_notice(chat_id, f"Режим зафиксирован: {label}")
+                    await self.send_admin_private(chat_id, user_id, f"Режим зафиксирован: {label}")
                 else:
-                    await self.send_command_notice(chat_id, "Использование: /hardness auto | normal | angry | super")
-                    return
-            elif cmd in {"/time", "/t"}:
+                    await self.send_admin_private(
+                        chat_id,
+                        user_id,
+                        "Использование: /hardness auto | normal | angry | super",
+                    )
+            elif cmd in {"/time", "/t", "/frequency"}:
                 try:
                     n = int(arg)
                 except ValueError:
-                    await self.send_command_notice(chat_id, "Использование: /time 0 | 3 | 5 | 20 | 40 | 60 | 180")
+                    await self.send_admin_private(
+                        chat_id,
+                        user_id,
+                        "Использование: /time 0 | 3 | 5 | 20 | 40 | 60 | 180",
+                    )
                     return
                 if n not in {0, 3, 5, 20, 40, 60, 180}:
-                    await self.send_command_notice(chat_id, "Выбери: 0, 3, 5, 20, 40, 60 или 180 секунд.")
+                    await self.send_admin_private(
+                        chat_id,
+                        user_id,
+                        "Выбери: 0, 3, 5, 20, 40, 60 или 180 секунд.",
+                    )
                     return
                 self.db.update_chat(chat_id, response_delay_seconds=n)
-                await self.send_command_notice(chat_id, f"Задержка ответа: {n} сек.")
-            elif cmd == "/frequency":
-                # Старый скрытый алиас: значения трактуем как секунды только из нового набора.
-                try:
-                    n = int(arg)
-                except ValueError:
-                    await self.send_command_notice(chat_id, "Теперь используй /time 0|3|5|20|40|60|180")
-                    return
-                if n not in {0, 3, 5, 20, 40, 60, 180}:
-                    await self.send_command_notice(chat_id, "Теперь используй /time 3|5|20|40|60|180")
-                    return
-                self.db.update_chat(chat_id, response_delay_seconds=n)
-                await self.send_command_notice(chat_id, f"Задержка ответа: {n} сек.")
+                await self.send_admin_private(chat_id, user_id, f"Задержка ответа: {n} сек.")
             elif cmd == "/silence":
                 try:
                     n = max(15, min(1440, int(arg)))
                 except ValueError:
-                    await self.send_command_notice(chat_id, "Использование: /silence количество_минут (15–1440)")
+                    await self.send_admin_private(
+                        chat_id,
+                        user_id,
+                        "Использование: /silence количество_минут (15–1440)",
+                    )
                     return
                 self.db.update_chat(chat_id, silence_minutes=n)
-                await self.send_command_notice(chat_id, f"Начну тормошить чат после {n} мин тишины.")
+                await self.send_admin_private(
+                    chat_id,
+                    user_id,
+                    f"Оживление группы начнётся после {n} мин тишины.",
+                )
             return
 
         if cmd == "/roast":
