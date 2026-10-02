@@ -973,6 +973,9 @@ class AksakalBot:
             enabled_filter = False
             title = "▶️ Выбери выключенную группу, где нужно запустить Аксакала:"
             action = "on"
+        elif mode == "settings":
+            title = "⚙️ Выбери группу, настройки которой нужно изменить:"
+            action = "settings"
 
         groups = await self.manageable_groups(user_id, enabled_filter)
         if not groups:
@@ -991,7 +994,7 @@ class AksakalBot:
                 "Локальный список пока пуст. Нажми «🔎 Выбрать уже добавленную группу»: "
                 "Telegram откроет системный список групп, где бот уже состоит.",
             )
-            request_id = {"all": 7001, "stop": 7002, "start": 7003}.get(mode, 7001)
+            request_id = {"all": 7001, "stop": 7002, "start": 7003, "settings": 7004}.get(mode, 7001)
             await self.tg.send(
                 private_chat_id,
                 message,
@@ -1022,6 +1025,112 @@ class AksakalBot:
         active = self.active_game(chat_id)
         if active:
             await self.stop_specific_game(chat_id, active)
+
+    @staticmethod
+    def private_group_settings_keyboard(target_chat_id: int, chat: dict[str, Any]) -> dict[str, Any]:
+        mode = chat.get("hardness_mode", "auto")
+        fixed = int(chat.get("fixed_hardness", 3))
+        delay = int(chat.get("response_delay_seconds", 20))
+        enabled = bool(chat.get("enabled", 1))
+
+        def mark(label: str, active: bool) -> str:
+            return ("✅ " if active else "") + label
+
+        prefix = f"gset:{target_chat_id}:"
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": mark("AUTO", mode == "auto"), "callback_data": prefix + "hard:auto"},
+                    {"text": mark("🙂 Нормальный", mode == "fixed" and fixed <= 2), "callback_data": prefix + "hard:normal"},
+                    {"text": mark("😠 Злой", mode == "fixed" and 3 <= fixed <= 4), "callback_data": prefix + "hard:angry"},
+                    {"text": mark("🔥 Супер злой", mode == "fixed" and fixed >= 5), "callback_data": prefix + "hard:super"},
+                ],
+                [
+                    {"text": mark("⚡ Сразу", delay == 0), "callback_data": prefix + "time:0"},
+                    {"text": mark("3 сек", delay == 3), "callback_data": prefix + "time:3"},
+                    {"text": mark("5 сек", delay == 5), "callback_data": prefix + "time:5"},
+                    {"text": mark("20 сек", delay == 20), "callback_data": prefix + "time:20"},
+                ],
+                [
+                    {"text": mark("40 сек", delay == 40), "callback_data": prefix + "time:40"},
+                    {"text": mark("1 мин", delay == 60), "callback_data": prefix + "time:60"},
+                    {"text": mark("3 мин", delay == 180), "callback_data": prefix + "time:180"},
+                ],
+                [
+                    {"text": mark("🟢 Включён", enabled), "callback_data": prefix + "bot:on"},
+                    {"text": mark("🔴 Выключен", not enabled), "callback_data": prefix + "bot:off"},
+                ],
+                [{"text": "⬅️ К группам", "callback_data": "ctrl:list:settings"}],
+            ]
+        }
+
+    async def show_private_group_settings(self, private_chat_id: int, user_id: int, target_chat_id: int):
+        assert self.tg
+        if not await self.is_admin(target_chat_id, user_id):
+            return
+        chat = self.db.get_chat(target_chat_id)
+        if not chat:
+            return
+        title = (chat.get("title") or str(target_chat_id)).strip()
+        await self.tg.send(
+            private_chat_id,
+            f"⚙️ Настройки · {title}\n\n{self.settings_text(chat)}",
+            reply_markup=self.private_group_settings_keyboard(target_chat_id, chat),
+        )
+
+    async def handle_private_group_settings_callback(self, query: dict[str, Any]):
+        assert self.tg
+        data = query.get("data") or ""
+        sender = query.get("from") or {}
+        message = query.get("message") or {}
+        private_chat = message.get("chat") or {}
+        private_chat_id = int(private_chat.get("id", 0) or 0)
+        user_id = int(sender.get("id", 0) or 0)
+        callback_id = query.get("id")
+
+        parts = data.split(":")
+        if len(parts) != 4 or parts[0] != "gset":
+            return
+        try:
+            target_chat_id = int(parts[1])
+        except ValueError:
+            return
+        section, value = parts[2], parts[3]
+
+        if not private_chat_id or private_chat.get("type") != "private":
+            return
+        if not await self.is_admin(target_chat_id, user_id):
+            if callback_id:
+                await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Только администратор.", show_alert=True)
+            return
+
+        if section == "hard":
+            if value == "auto":
+                self.db.update_chat(target_chat_id, hardness_mode="auto")
+            elif value in {"normal", "angry", "super"}:
+                self.db.update_chat(
+                    target_chat_id,
+                    hardness_mode="fixed",
+                    fixed_hardness={"normal": 1, "angry": 3, "super": 5}[value],
+                )
+        elif section == "time" and value in {"0", "3", "5", "20", "40", "60", "180"}:
+            self.db.update_chat(target_chat_id, response_delay_seconds=int(value))
+        elif section == "bot" and value in {"on", "off"}:
+            await self.set_group_enabled_state(target_chat_id, value == "on")
+
+        if callback_id:
+            await self.tg.call("answerCallbackQuery", callback_query_id=callback_id, text="Сохранено")
+        fresh = self.db.get_chat(target_chat_id) or {}
+        title = (fresh.get("title") or str(target_chat_id)).strip()
+        try:
+            await self.tg.edit(
+                private_chat_id,
+                int(message.get("message_id", 0) or 0),
+                f"⚙️ Настройки · {title}\n\n{self.settings_text(fresh)}",
+                self.private_group_settings_keyboard(target_chat_id, fresh),
+            )
+        except Exception:
+            await self.show_private_group_settings(private_chat_id, user_id, target_chat_id)
 
     async def show_private_group_card(self, private_chat_id: int, user_id: int, target_chat_id: int):
         assert self.tg
@@ -1084,7 +1193,7 @@ class AksakalBot:
         _, action, value = parts
 
         if action == "list":
-            mode = value if value in {"all", "stop", "start"} else "all"
+            mode = value if value in {"all", "stop", "start", "settings"} else "all"
             await self.show_private_group_picker(private_chat_id, user_id, mode=mode)
             return
 
@@ -1103,6 +1212,9 @@ class AksakalBot:
 
         if action == "group":
             await self.show_private_group_card(private_chat_id, user_id, target_chat_id)
+            return
+        if action == "settings":
+            await self.show_private_group_settings(private_chat_id, user_id, target_chat_id)
             return
 
         chat = self.db.get_chat(target_chat_id)
@@ -1195,12 +1307,23 @@ class AksakalBot:
                     reply_markup=self.private_main_keyboard(),
                 )
                 return
+            if request_id == 7004:
+                await self.show_private_group_settings(private_chat_id, user_id, target_chat_id)
+                return
 
             await self.show_private_group_card(private_chat_id, user_id, target_chat_id)
             return
 
         text = (msg.get("text") or "").strip()
         command = text.split(maxsplit=1)[0].split("@")[0].lower() if text.startswith("/") else ""
+
+        if command == "/settings" or text == "⚙️ Настройки группы":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="settings")
+            return
+
+        if command == "/status":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="all")
+            return
 
         if command == "/test" or text == "🧪 Проверить AI":
             health = await self.ai_health_text()
@@ -2862,6 +2985,9 @@ class AksakalBot:
         ).strip() or sender.get("username") or str(user_id)
         callback_id = query.get("id")
 
+        if data.startswith("gset:"):
+            await self.handle_private_group_settings_callback(query)
+            return
         if data.startswith("ctrl:"):
             await self.handle_private_control_callback(query)
             return
