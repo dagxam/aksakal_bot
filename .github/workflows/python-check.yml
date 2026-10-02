@@ -126,6 +126,11 @@ jobs:
               db.set_ignored_user(-100123, ali_id, True, added_by=uid)
               assert db.is_ignored_user(-100123, ali_id)
               assert ali_id not in {int(x["user_id"]) for x in db.active_users(-100123, 30 * 86400)}
+              assert all(int(x.get("user_id") or 0) != ali_id for x in db.recent_context(-100123, 20))
+              assert not any(
+                  int(x.get("user_id") or 0) == ali_id
+                  for x in db.relevant_messages(-100123, "машина", 20)
+              )
               ignored = db.ignored_users(-100123)
               assert ignored and int(ignored[0]["user_id"]) == ali_id
               db.set_ignored_user(-100123, ali_id, False, added_by=uid)
