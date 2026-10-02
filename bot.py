@@ -1418,6 +1418,41 @@ class AksakalBot:
             await self.show_private_group_picker(private_chat_id, user_id, mode="all")
             return
 
+        if command == "/on":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="start")
+            return
+
+        if command == "/off":
+            await self.show_private_group_picker(private_chat_id, user_id, mode="stop")
+            return
+
+        if command in {"/hardness", "/time"}:
+            await self.show_private_group_picker(private_chat_id, user_id, mode="settings")
+            return
+
+        if command == "/silence":
+            await self.tg.send(
+                private_chat_id,
+                "Таймер оживления относится к конкретной группе. "
+                "Сейчас его можно менять командой /silence 15..1440 из нужной группы; "
+                "ответ и подтверждение получает только администратор в личке.",
+                reply_markup=private_keyboard,
+            )
+            return
+
+        if command in {
+            "/games", "/crocodile", "/cities", "/hangman", "/quiz", "/whoami",
+            "/stopgame", "/rating", "/mystats", "/profile", "/roast", "/good", "/bad",
+        }:
+            await self.tg.send(
+                private_chat_id,
+                "Эта команда привязана к конкретной группе или сообщению внутри неё. "
+                "Она показана в меню администратора для полного списка команд. "
+                "Запусти её в нужной группе; служебные админ-ответы всё равно придут только сюда.",
+                reply_markup=private_keyboard,
+            )
+            return
+
         if command == "/test" or text == "🧪 Проверить AI":
             health = await self.ai_health_text()
             await self.tg.send(
@@ -1444,15 +1479,24 @@ class AksakalBot:
             return
 
         if command == "/help" or text == "ℹ️ Помощь":
+            if is_group_admin:
+                body = (
+                    "Через эту личку можно управлять Аксакалом без служебных сообщений в группе.\n\n"
+                    "📋 «Мои группы» — выбрать сохранённую группу и посмотреть состояние.\n"
+                    "🔎 «Выбрать группу в Telegram» — открыть системный список уже добавленных групп.\n"
+                    "🛑/▶️ — тихо выключить или включить Аксакала.\n"
+                    "🧪 — проверить AI.\n\n"
+                    + self.admin_group_help_text()
+                )
+            else:
+                body = (
+                    "Здесь доступна только справка и выбор группы через системную кнопку Telegram. "
+                    "Полное меню команд появляется после того, как Telegram подтвердит, "
+                    "что ты администратор хотя бы одной группы с Аксакалом."
+                )
             await self.tg.send(
                 private_chat_id,
-                "Через эту личку можно управлять Аксакалом без служебных сообщений в группе.\n\n"
-                "📋 «Мои группы» — выбрать сохранённую группу и посмотреть состояние.\n"
-                "🔎 «Выбрать группу в Telegram» — открыть системный список уже добавленных групп и привязать нужную к панели.\n"
-                "🛑 «Остановить в группе» — тихо выключить Аксакала.\n"
-                "▶️ «Запустить в группе» — снова включить.\n"
-                "🧪 «Проверить AI» — проверить модели.\n\n"
-                "Управлять можно только группами, где бот уже состоит и Telegram подтверждает твои права администратора.",
+                body,
                 reply_markup=private_keyboard,
             )
             return
