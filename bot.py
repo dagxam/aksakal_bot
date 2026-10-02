@@ -923,6 +923,32 @@ class AksakalBot:
             {"command": "help", "description": "Все команды администратора"},
         ]
 
+    @staticmethod
+    def group_admin_commands() -> list[dict[str, str]]:
+        return [
+            {"command": "settings", "description": "Настройки Аксакала"},
+            {"command": "status", "description": "Состояние и режим"},
+            {"command": "games", "description": "Выбрать игру"},
+            {"command": "crocodile", "description": "Крокодил"},
+            {"command": "cities", "description": "Города"},
+            {"command": "hangman", "description": "Виселица"},
+            {"command": "quiz", "description": "Викторина"},
+            {"command": "whoami", "description": "Кто я?"},
+            {"command": "stopgame", "description": "Закончить игру"},
+            {"command": "rating", "description": "Игровой рейтинг"},
+            {"command": "mystats", "description": "Моя игровая статистика"},
+            {"command": "roast", "description": "Подколоть сообщение"},
+            {"command": "good", "description": "Отметить удачный ответ"},
+            {"command": "bad", "description": "Отметить плохой ответ"},
+            {"command": "test", "description": "Проверить AI"},
+            {"command": "on", "description": "Включить Аксакала"},
+            {"command": "off", "description": "Выключить Аксакала"},
+            {"command": "hardness", "description": "Жёсткость auto/normal/angry/super"},
+            {"command": "time", "description": "Задержка ответа"},
+            {"command": "silence", "description": "Таймер оживления группы"},
+            {"command": "help", "description": "Все команды"},
+        ]
+
     async def sync_private_command_menu(self, private_chat_id: int, user_id: int) -> bool:
         """Показывает расширенное меню команд только подтверждённым администраторам групп."""
         assert self.tg
@@ -1544,29 +1570,7 @@ class AksakalBot:
             {"command": "start", "description": "Открыть панель"},
             {"command": "help", "description": "Помощь"},
         ]
-        group_admin_commands = [
-            {"command": "settings", "description": "Настройки Аксакала"},
-            {"command": "status", "description": "Состояние и режим"},
-            {"command": "games", "description": "Выбрать игру"},
-            {"command": "crocodile", "description": "Крокодил"},
-            {"command": "cities", "description": "Города"},
-            {"command": "hangman", "description": "Виселица"},
-            {"command": "quiz", "description": "Викторина"},
-            {"command": "whoami", "description": "Кто я?"},
-            {"command": "stopgame", "description": "Закончить игру"},
-            {"command": "rating", "description": "Игровой рейтинг"},
-            {"command": "mystats", "description": "Моя игровая статистика"},
-            {"command": "roast", "description": "Подколоть сообщение"},
-            {"command": "good", "description": "Отметить удачный ответ"},
-            {"command": "bad", "description": "Отметить плохой ответ"},
-            {"command": "test", "description": "Проверить AI"},
-            {"command": "on", "description": "Включить Аксакала"},
-            {"command": "off", "description": "Выключить Аксакала"},
-            {"command": "hardness", "description": "Жёсткость auto/normal/angry/super"},
-            {"command": "time", "description": "Задержка ответа"},
-            {"command": "silence", "description": "Таймер оживления группы"},
-            {"command": "help", "description": "Все команды"},
-        ]
+        group_admin_commands = self.group_admin_commands()
 
         async def safe_sync(label: str, get_method: str, set_method: str, desired: Any, **payload):
             try:
