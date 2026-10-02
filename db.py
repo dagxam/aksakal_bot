@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS chats (
     hardness_mode TEXT NOT NULL DEFAULT 'auto',
     fixed_hardness INTEGER NOT NULL DEFAULT 3,
     response_delay_seconds INTEGER NOT NULL DEFAULT 20,
-    silence_nudge_count INTEGER NOT NULL DEFAULT 0
+    silence_nudge_count INTEGER NOT NULL DEFAULT 0,
+    manual_quiet INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -69,6 +70,17 @@ CREATE TABLE IF NOT EXISTS group_membership_cache (
 
 CREATE INDEX IF NOT EXISTS idx_group_membership_user
 ON group_membership_cache(user_id, status, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS bot_ignored_users (
+    chat_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    added_by INTEGER NOT NULL DEFAULT 0,
+    added_at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(chat_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bot_ignored_users_chat
+ON bot_ignored_users(chat_id, added_at DESC);
 
 CREATE TABLE IF NOT EXISTS learned_words (
     chat_id INTEGER NOT NULL,
@@ -298,6 +310,8 @@ class Database:
                 conn.execute("ALTER TABLE chats ADD COLUMN response_delay_seconds INTEGER NOT NULL DEFAULT 20")
             if "silence_nudge_count" not in columns:
                 conn.execute("ALTER TABLE chats ADD COLUMN silence_nudge_count INTEGER NOT NULL DEFAULT 0")
+            if "manual_quiet" not in columns:
+                conn.execute("ALTER TABLE chats ADD COLUMN manual_quiet INTEGER NOT NULL DEFAULT 0")
 
             crocodile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(crocodile_games)").fetchall()}
             if "skip_used" not in crocodile_columns:
@@ -420,7 +434,7 @@ class Database:
             return dict(row) if row else None
 
     def update_chat(self, chat_id: int, **values):
-        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness", "response_delay_seconds", "silence_nudge_count"}
+        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness", "response_delay_seconds", "silence_nudge_count", "manual_quiet"}
         pairs = [(k, v) for k, v in values.items() if k in allowed]
         if not pairs:
             return
@@ -477,6 +491,50 @@ class Database:
                 (chat_id, user_id),
             ).fetchall()
             return [r["token"] for r in rows]
+
+    def set_ignored_user(self, chat_id: int, user_id: int, ignored: bool, added_by: int = 0):
+        with self.connect() as conn:
+            if ignored:
+                conn.execute(
+                    """
+                    INSERT INTO bot_ignored_users(chat_id,user_id,added_by,added_at)
+                    VALUES(?,?,?,?)
+                    ON CONFLICT(chat_id,user_id) DO UPDATE SET
+                        added_by=excluded.added_by,
+                        added_at=excluded.added_at
+                    """,
+                    (chat_id, user_id, added_by, int(time.time())),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM bot_ignored_users WHERE chat_id=? AND user_id=?",
+                    (chat_id, user_id),
+                )
+
+    def is_ignored_user(self, chat_id: int, user_id: int) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM bot_ignored_users WHERE chat_id=? AND user_id=?",
+                (chat_id, user_id),
+            ).fetchone()
+        return bool(row)
+
+    def ignored_users(self, chat_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT i.chat_id,i.user_id,i.added_by,i.added_at,
+                       COALESCE(u.display_name,'') AS display_name,
+                       COALESCE(u.username,'') AS username
+                FROM bot_ignored_users i
+                LEFT JOIN users u
+                  ON u.chat_id=i.chat_id AND u.user_id=i.user_id
+                WHERE i.chat_id=?
+                ORDER BY i.added_at DESC, i.user_id ASC
+                """,
+                (chat_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_message(
         self,
@@ -1536,7 +1594,14 @@ class Database:
         cutoff = int(time.time()) - since_seconds
         with self.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM users WHERE chat_id=? AND last_seen_at>=? ORDER BY last_seen_at DESC",
+                """
+                SELECT u.*
+                FROM users u
+                LEFT JOIN bot_ignored_users i
+                  ON i.chat_id=u.chat_id AND i.user_id=u.user_id
+                WHERE u.chat_id=? AND u.last_seen_at>=? AND i.user_id IS NULL
+                ORDER BY u.last_seen_at DESC
+                """,
                 (chat_id, cutoff),
             ).fetchall()
             return [dict(r) for r in rows]
