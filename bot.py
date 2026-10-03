@@ -3174,17 +3174,22 @@ class AksakalBot:
             return True
 
         letters_only = re.sub(r"[^а-яa-z]", "", guess)
-        if len(letters_only) != 1 and guess != word:
-            await self.tg.send(chat_id, f"❌ {display_name}, назови одну букву или всё слово целиком.")
+        whole_word_guess = len(letters_only) > 1 and " " not in guess
+        if len(letters_only) != 1 and guess != word and not whole_word_guess:
+            await self.tg.send(chat_id, f"❌ {display_name}, назови одну букву или одно слово целиком.")
             return True
 
         self.db.touch_game_participant(chat_id, "hangman", user_id, display_name)
         guessed = set(str(game.get("guessed_letters") or "").replace("ё", "е"))
         misses = int(game.get("misses", 0) or 0)
         solved = False
+        result_label = ""
 
         if guess == word:
             solved = True
+        elif whole_word_guess:
+            misses += 1
+            result_label = "❌ Не это слово."
         else:
             letter = letters_only.replace("ё", "е")
             if letter in guessed:
@@ -3193,6 +3198,9 @@ class AksakalBot:
             guessed.add(letter)
             if letter not in word:
                 misses += 1
+                result_label = "❌ Нет такой буквы."
+            else:
+                result_label = "✅ Есть такая буква."
             normalized_word_letters = {ch for ch in word if ch.isalpha()}
             solved = normalized_word_letters.issubset(guessed)
 
@@ -3222,7 +3230,7 @@ class AksakalBot:
 
         await self.tg.send(
             chat_id,
-            f"{'✅ Есть такая буква.' if letters_only and letters_only in word else '❌ Нет такой буквы.'}\n"
+            f"{result_label}\n"
             f"{self.hangman_pattern(str(game['word']), letters)}\nОшибок: {misses}/{max_misses}",
             reply_markup=self.hangman_keyboard(),
         )
