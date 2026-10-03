@@ -573,7 +573,23 @@ class AksakalBot:
         {"id": "q13", "q": "Какой металл обозначается химическим символом Fe?", "options": ("Медь", "Серебро", "Железо", "Олово"), "a": "Железо"},
         {"id": "q14", "q": "Сколько минут в двух часах?", "options": ("100", "110", "120", "140"), "a": "120"},
         {"id": "q15", "q": "Как называется линия, делящая Землю на Северное и Южное полушария?", "options": ("Меридиан", "Экватор", "Тропик", "Орбита"), "a": "Экватор"},
+        {"id": "q16", "q": "Кто сформулировал три классических закона движения?", "options": ("Галилей", "Ньютон", "Кеплер", "Фарадей"), "a": "Ньютон"},
+        {"id": "q17", "q": "Какой химический элемент обозначается символом Na?", "options": ("Натрий", "Азот", "Неон", "Никель"), "a": "Натрий"},
+        {"id": "q18", "q": "Чему равен квадратный корень из 144?", "options": ("10", "11", "12", "14"), "a": "12"},
+        {"id": "q19", "q": "Столица Австралии?", "options": ("Сидней", "Мельбурн", "Канберра", "Перт"), "a": "Канберра"},
+        {"id": "q20", "q": "В какой органелле растительной клетки в основном происходит фотосинтез?", "options": ("Ядро", "Митохондрия", "Хлоропласт", "Рибосома"), "a": "Хлоропласт"},
+        {"id": "q21", "q": "В каком году состоялся первый полёт человека в космос?", "options": ("1957", "1961", "1965", "1969"), "a": "1961"},
+        {"id": "q22", "q": "Какому десятичному числу соответствует двоичное число 1010?", "options": ("8", "9", "10", "12"), "a": "10"},
+        {"id": "q23", "q": "Как называется единица электрического сопротивления в СИ?", "options": ("Вольт", "Ампер", "Ом", "Ватт"), "a": "Ом"},
+        {"id": "q24", "q": "Гипотенуза прямоугольного треугольника с катетами 3 и 4 равна:", "options": ("5", "6", "7", "8"), "a": "5"},
+        {"id": "q25", "q": "Какой закон связывает давление и объём идеального газа при постоянной температуре?", "options": ("Закон Ома", "Закон Бойля—Мариотта", "Закон Гука", "Закон Архимеда"), "a": "Закон Бойля—Мариотта"},
     )
+
+    QUIZ_LEVELS: dict[int, tuple[str, ...]] = {
+        1: ("q2", "q4", "q7", "q9", "q10", "q11", "q14", "q18", "q21"),
+        2: ("q1", "q3", "q5", "q6", "q8", "q12", "q15", "q17", "q19", "q24"),
+        3: ("q13", "q16", "q20", "q22", "q23", "q25"),
+    }
 
     WHOAMI_ITEMS: dict[str, tuple[str, str, str]] = {
         "Альберт Эйнштейн": (
@@ -1140,6 +1156,7 @@ class AksakalBot:
         fixed = int(chat.get("fixed_hardness", 3))
         delay = int(chat.get("response_delay_seconds", 20))
         enabled = bool(chat.get("enabled", 1))
+        game_difficulty = str(chat.get("game_difficulty", "normal") or "normal").lower()
 
         def mark(label: str, active: bool) -> str:
             return ("✅ " if active else "") + label
@@ -1163,6 +1180,11 @@ class AksakalBot:
                     {"text": mark("40 сек", delay == 40), "callback_data": prefix + "time:40"},
                     {"text": mark("1 мин", delay == 60), "callback_data": prefix + "time:60"},
                     {"text": mark("3 мин", delay == 180), "callback_data": prefix + "time:180"},
+                ],
+                [
+                    {"text": mark("🎮 Лёгкий", game_difficulty == "easy"), "callback_data": prefix + "gamelevel:easy"},
+                    {"text": mark("🎮 Нормальный", game_difficulty == "normal"), "callback_data": prefix + "gamelevel:normal"},
+                    {"text": mark("🎮 Сложный", game_difficulty == "hard"), "callback_data": prefix + "gamelevel:hard"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": prefix + "bot:on"},
@@ -1223,6 +1245,9 @@ class AksakalBot:
                 )
         elif section == "time" and value in {"0", "3", "5", "20", "40", "60", "180"}:
             self.db.update_chat(target_chat_id, response_delay_seconds=int(value))
+        elif section == "gamelevel" and value in {"easy", "normal", "hard"}:
+            self.db.update_chat(target_chat_id, game_difficulty=value)
+            self.refresh_active_game_timer(target_chat_id)
         elif section == "bot" and value in {"on", "off"}:
             await self.set_group_enabled_state(target_chat_id, value == "on")
 
@@ -1260,7 +1285,9 @@ class AksakalBot:
         fixed = int(chat.get("fixed_hardness", 3))
         hardness = "AUTO" if mode == "auto" else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
         delay = int(chat.get("response_delay_seconds", 20))
+        game_level = AksakalBot.game_difficulty_label_from_chat(chat)
         delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
+        game_level = self.game_difficulty_label_from_chat(chat)
         title = (chat.get("title") or str(target_chat_id)).strip()
 
         buttons = [
@@ -1277,7 +1304,8 @@ class AksakalBot:
             f"🏠 {title}\n"
             f"Состояние: {'🟢 работает' if enabled else '🔴 остановлен'}\n"
             f"Жёсткость: {hardness}\n"
-            f"Время ответа: {delay_label}\n\n"
+            f"Время ответа: {delay_label}\n"
+            f"Сложность игр: {game_level}\n\n"
             "Остановка из лички проходит тихо: в группу отдельное сообщение не отправляется.",
             reply_markup={"inline_keyboard": buttons},
         )
@@ -2357,6 +2385,51 @@ class AksakalBot:
         return None
 
     @staticmethod
+    def game_difficulty_label_from_chat(chat: dict[str, Any]) -> str:
+        value = str(chat.get("game_difficulty", "normal") or "normal").lower()
+        return {"easy": "Лёгкий", "normal": "Нормальный", "hard": "Сложный"}.get(value, "Нормальный")
+
+    def game_difficulty(self, chat_id: int) -> int:
+        chat = self.db.get_chat(chat_id) or {}
+        value = str(chat.get("game_difficulty", "normal") or "normal").lower()
+        return {"easy": 1, "normal": 2, "hard": 3}.get(value, 2)
+
+    def game_difficulty_label(self, chat_id: int) -> str:
+        return {1: "Лёгкий", 2: "Нормальный", 3: "Сложный"}[self.game_difficulty(chat_id)]
+
+    def refresh_active_game_timer(self, chat_id: int):
+        game = self.active_game(chat_id)
+        if not game:
+            return
+        self.cancel_game_timer(chat_id)
+        if game == "crocodile":
+            state = self.db.get_crocodile_game(chat_id) or {}
+            word = str(state.get("word") or "")
+            if word:
+                self.set_game_timer(chat_id, self.crocodile_round_timer(chat_id, word))
+        elif game == "cities":
+            state = self.db.get_city_game(chat_id) or {}
+            city = str(state.get("current_city") or "")
+            letter = str(state.get("required_letter") or "")
+            if city and letter:
+                self.set_game_timer(chat_id, self.city_round_timer(chat_id, city, letter))
+        elif game == "hangman":
+            state = self.db.get_hangman_game(chat_id) or {}
+            word = str(state.get("word") or "")
+            if word:
+                self.set_game_timer(chat_id, self.hangman_round_timer(chat_id, word))
+        elif game == "quiz":
+            state = self.db.get_quiz_game(chat_id) or {}
+            question_id = str(state.get("question_id") or "")
+            if question_id:
+                self.set_game_timer(chat_id, self.quiz_round_timer(chat_id, question_id))
+        elif game == "whoami":
+            state = self.db.get_whoami_game(chat_id) or {}
+            answer = str(state.get("answer") or "")
+            if answer:
+                self.set_game_timer(chat_id, self.whoami_round_timer(chat_id, answer))
+
+    @staticmethod
     def game_center_keyboard() -> dict[str, Any]:
         return {
             "inline_keyboard": [
@@ -2407,6 +2480,7 @@ class AksakalBot:
         await self.tg.send(
             chat_id,
             "🎮 Во что играем?\n"
+            f"Сложность: {self.game_difficulty_label(chat_id)}. "
             "Сессия идёт до 10 очков. Победитель объявляется автоматически, после чего Аксакал возвращается к обычному общению."
             + suffix,
             reply_markup=self.game_center_keyboard(),
@@ -2652,8 +2726,8 @@ class AksakalBot:
             chat_id,
             "🐊 Начинаем «Крокодила»!\n\n"
             "Я объясняю слово, не называя его. Первый угадавший получает +1. "
-            "Играем до 10 очков. Если группа быстро угадывает, слова становятся сложнее. "
-            "Через 35 секунд без ответа дам подсказку, затем раскрою слово и начну новый раунд.",
+            f"Играем до 10 очков. Сложность: {self.game_difficulty_label(chat_id)}. "
+            "Выбранная сложность определяет слова, частоту подсказок и время раунда.",
         )
         await self.start_crocodile_round(chat_id)
 
@@ -2665,7 +2739,7 @@ class AksakalBot:
         if not game or not game.get("active"):
             return
 
-        difficulty = max(1, min(3, int(game.get("difficulty", 1) or 1)))
+        difficulty = self.game_difficulty(chat_id)
         previous = self.normalize_crocodile_guess(str(game.get("word") or ""))
         level_words = [
             word for word in self.CROCODILE_LEVELS.get(difficulty, ())
@@ -2676,7 +2750,7 @@ class AksakalBot:
         fresh = self.db.get_crocodile_game(chat_id) or {}
         round_number = int(fresh.get("round_number", 1) or 1)
         clue = self.CROCODILE_WORDS[word][0]
-        labels = {1: "лёгкая", 2: "средняя", 3: "сложная"}
+        labels = {1: "лёгкая", 2: "нормальная", 3: "сложная"}
         sent = await self.tg.send(
             chat_id,
             f"🐊 КРОКОДИЛ · Раунд {round_number} · {labels.get(difficulty, 'лёгкая')} сложность\n\n"
@@ -2690,17 +2764,17 @@ class AksakalBot:
 
     async def crocodile_round_timer(self, chat_id: int, word: str):
         try:
-            await asyncio.sleep(35)
+            first_wait, second_wait = {1: (25, 45), 2: (35, 30), 3: (50, 25)}[self.game_difficulty(chat_id)]
+            await asyncio.sleep(first_wait)
             game = self.db.get_crocodile_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
             await self.send_crocodile_hint(chat_id, automatic=True)
-            await asyncio.sleep(30)
+            await asyncio.sleep(second_wait)
             game = self.db.get_crocodile_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
             self.db.clear_crocodile_round(chat_id)
-            self.db.update_crocodile_difficulty(chat_id, fast=False)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
             await self.start_crocodile_round(chat_id, delay=2)
@@ -2783,14 +2857,9 @@ class AksakalBot:
         correct = bool(re.search(rf"(?<![a-zа-я0-9]){re.escape(answer)}(?![a-zа-я0-9])", guess))
         if correct:
             word = str(game["word"])
-            elapsed = int(time.time()) - int(game.get("round_started_at", 0) or 0)
-            attempts = int(game.get("attempts", 0) or 0)
             self.cancel_game_timer(chat_id)
             self.db.clear_crocodile_round(chat_id)
-            difficulty = self.db.update_crocodile_difficulty(
-                chat_id,
-                fast=bool(elapsed and elapsed <= 25 and attempts <= 3),
-            )
+            difficulty = self.game_difficulty(chat_id)
             self.db.add_crocodile_score(chat_id, user_id, display_name, 1)
             stats, won = await self.award_game_point(chat_id, "crocodile", user_id, display_name)
             if won:
@@ -2798,7 +2867,7 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"🎉 {display_name} угадал! Слово: {word}.\n"
-                f"Счёт сессии: {stats['session_score']}/10. Текущая сложность: {difficulty}/3.\n\n"
+                f"Счёт сессии: {stats['session_score']}/10. Сложность: {self.game_difficulty_label(chat_id)}.\n\n"
                 f"{self.session_score_text(chat_id, 'crocodile')}\n\n"
                 "Следующий раунд через 3 секунды…",
             )
@@ -2807,7 +2876,8 @@ class AksakalBot:
             return True
 
         attempts = self.db.register_crocodile_attempt(chat_id)
-        if attempts in {5, 10}:
+        hint_attempts = {1: {3, 6}, 2: {5, 10}, 3: {8}}[self.game_difficulty(chat_id)]
+        if attempts in hint_attempts:
             await self.send_crocodile_hint(chat_id, automatic=True)
         return True
 
@@ -2825,14 +2895,14 @@ class AksakalBot:
         return {cls.normalize_city_name(city): city for city in cls.CITY_NAMES}
 
     @classmethod
-    def resolve_city(cls, text: str) -> str | None:
+    def resolve_city(cls, text: str, cutoff: float = 0.84) -> str | None:
         normalized = cls.normalize_city_name(text)
         if not normalized or len(normalized) < 2:
             return None
         lookup = cls.city_lookup()
         if normalized in lookup:
             return lookup[normalized]
-        matches = difflib.get_close_matches(normalized, list(lookup), n=1, cutoff=0.84)
+        matches = difflib.get_close_matches(normalized, list(lookup), n=1, cutoff=cutoff)
         return lookup[matches[0]] if matches else None
 
     @staticmethod
@@ -2871,7 +2941,7 @@ class AksakalBot:
             "🏙 Начинаем «Города»!\n\n"
             "Я называю город, а участники отвечают городом на последнюю подходящую букву. "
             "Повторять города нельзя. Небольшие опечатки и варианты с дефисом/«ё» я постараюсь распознать. "
-            "За правильный город +1. Играем до 10 очков.\n\n"
+            f"За правильный город +1. Играем до 10 очков. Сложность: {self.game_difficulty_label(chat_id)}.\n\n"
             f"Я: {first}\nВаш город на «{required.upper()}».",
             reply_markup=self.city_keyboard(),
         )
@@ -2879,13 +2949,14 @@ class AksakalBot:
 
     async def city_round_timer(self, chat_id: int, current_city: str, required: str):
         try:
-            await asyncio.sleep(45)
+            first_wait, second_wait = {1: (60, 60), 2: (45, 45), 3: (30, 30)}[self.game_difficulty(chat_id)]
+            await asyncio.sleep(first_wait)
             game = self.db.get_city_game(chat_id)
             if not game or not game.get("active") or str(game.get("current_city") or "") != current_city:
                 return
             if self.tg:
                 await self.tg.send(chat_id, f"⏱ Кто продолжит? Нужен город на «{required.upper()}».")
-            await asyncio.sleep(45)
+            await asyncio.sleep(second_wait)
             game = self.db.get_city_game(chat_id)
             if not game or not game.get("active") or str(game.get("current_city") or "") != current_city:
                 return
@@ -2926,7 +2997,8 @@ class AksakalBot:
         if kind != "message" or not text.strip():
             return True
 
-        city = self.resolve_city(text)
+        cutoff = {1: 0.72, 2: 0.84, 3: 0.93}[self.game_difficulty(chat_id)]
+        city = self.resolve_city(text, cutoff=cutoff)
         if not city:
             return True
 
@@ -3024,10 +3096,12 @@ class AksakalBot:
             )
             return
         self.db.start_game_session(chat_id, "hangman", 10, reset=True)
+        max_misses = {1: 8, 2: 6, 3: 5}[self.game_difficulty(chat_id)]
         await self.tg.send(
             chat_id,
             "🔤 Начинаем «Виселицу»! Называйте одну букву или сразу всё слово. "
-            "Шесть ошибок — слово раскрывается. За разгаданное слово +1, играем до 10.",
+            f"Сложность: {self.game_difficulty_label(chat_id)} · ошибок до проигрыша: {max_misses}. "
+            "За разгаданное слово +1, играем до 10.",
         )
         await self.start_hangman_round(chat_id)
 
@@ -3039,22 +3113,35 @@ class AksakalBot:
             return
         current = self.db.get_hangman_game(chat_id)
         previous = str(current.get("word") or "") if current else ""
-        choices = [x for x in self.HANGMAN_WORDS if x[0] != previous]
+        difficulty = self.game_difficulty(chat_id)
+
+        def word_level(item: tuple[str, str]) -> int:
+            length = len(self.normalize_crocodile_guess(item[0]).replace(" ", "").replace("-", ""))
+            return 1 if length <= 7 else 2 if length <= 9 else 3
+
+        choices = [
+            x for x in self.HANGMAN_WORDS
+            if x[0] != previous and word_level(x) == difficulty
+        ]
+        if not choices:
+            choices = [x for x in self.HANGMAN_WORDS if x[0] != previous]
         word, hint = random.choice(choices or list(self.HANGMAN_WORDS))
+        max_misses = {1: 8, 2: 6, 3: 5}[difficulty]
         self.db.set_hangman_round(chat_id, word, hint)
         game = self.db.get_hangman_game(chat_id) or {}
         await self.tg.send(
             chat_id,
             f"🔤 ВИСЕЛИЦА · Раунд {game.get('round_number', 1)}\n\n"
             f"{self.hangman_pattern(word, '')}\n"
-            f"💡 Тема: {hint}\nОшибок: 0/6",
+            f"💡 Тема: {hint}\nСложность: {self.game_difficulty_label(chat_id)} · ошибок: 0/{max_misses}",
             reply_markup=self.hangman_keyboard(),
         )
         self.set_game_timer(chat_id, self.hangman_round_timer(chat_id, word))
 
     async def hangman_round_timer(self, chat_id: int, word: str):
         try:
-            await asyncio.sleep(45)
+            first_wait, second_wait = {1: (25, 50), 2: (45, 35), 3: (60, 25)}[self.game_difficulty(chat_id)]
+            await asyncio.sleep(first_wait)
             game = self.db.get_hangman_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
@@ -3067,7 +3154,7 @@ class AksakalBot:
                 self.db.update_hangman_game(chat_id, letters, int(game.get("misses", 0) or 0))
                 if self.tg:
                     await self.tg.send(chat_id, f"💡 Автоподсказка: открываю букву «{letter.upper()}».\n{self.hangman_pattern(word, letters)}")
-            await asyncio.sleep(35)
+            await asyncio.sleep(second_wait)
             game = self.db.get_hangman_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
@@ -3132,11 +3219,12 @@ class AksakalBot:
             self.game_tasks[chat_id] = task
             return True
 
-        if misses >= 6:
+        max_misses = {1: 8, 2: 6, 3: 5}[self.game_difficulty(chat_id)]
+        if misses >= max_misses:
             self.cancel_game_timer(chat_id)
             missed_word = str(game["word"])
             self.db.clear_hangman_round(chat_id)
-            await self.tg.send(chat_id, f"💀 Шесть ошибок. Слово было: {missed_word}. Следующее через 3 секунды…")
+            await self.tg.send(chat_id, f"💀 {max_misses} ошибок. Слово было: {missed_word}. Следующее через 3 секунды…")
             task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
             self.game_tasks[chat_id] = task
             return True
@@ -3144,7 +3232,7 @@ class AksakalBot:
         await self.tg.send(
             chat_id,
             f"{'✅ Есть такая буква.' if letters_only and letters_only in word else '❌ Нет такой буквы.'}\n"
-            f"{self.hangman_pattern(str(game['word']), letters)}\nОшибок: {misses}/6",
+            f"{self.hangman_pattern(str(game['word']), letters)}\nОшибок: {misses}/{max_misses}",
             reply_markup=self.hangman_keyboard(),
         )
         return True
@@ -3172,7 +3260,11 @@ class AksakalBot:
             await self.tg.send(chat_id, "❓ Викторина уже идёт. Отвечайте цифрой 1–4.", reply_markup=self.quiz_keyboard())
             return
         self.db.start_game_session(chat_id, "quiz", 10, reset=True)
-        await self.tg.send(chat_id, "❓ Начинаем викторину! Первый правильный ответ получает +1. Играем до 10 очков.")
+        await self.tg.send(
+            chat_id,
+            f"❓ Начинаем викторину! Сложность: {self.game_difficulty_label(chat_id)}. "
+            "Первый правильный ответ получает +1. Играем до 10 очков.",
+        )
         await self.start_quiz_round(chat_id)
 
     async def start_quiz_round(self, chat_id: int, delay: float = 0):
@@ -3181,15 +3273,20 @@ class AksakalBot:
             await asyncio.sleep(delay)
         current = self.db.get_quiz_game(chat_id)
         previous = str(current.get("question_id") or "") if current else ""
-        choices = [q for q in self.QUIZ_QUESTIONS if q["id"] != previous]
-        item = random.choice(choices or list(self.QUIZ_QUESTIONS))
+        difficulty = self.game_difficulty(chat_id)
+        allowed_ids = set(self.QUIZ_LEVELS.get(difficulty, ()))
+        choices = [
+            q for q in self.QUIZ_QUESTIONS
+            if q["id"] != previous and q["id"] in allowed_ids
+        ]
+        item = random.choice(choices or [q for q in self.QUIZ_QUESTIONS if q["id"] != previous] or list(self.QUIZ_QUESTIONS))
         options = tuple(item["options"])
         self.db.set_quiz_round(chat_id, str(item["id"]), str(item["a"]), str(item["q"]), "\n".join(options))
         state = self.db.get_quiz_game(chat_id) or {}
         rendered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
         await self.tg.send(
             chat_id,
-            f"❓ ВИКТОРИНА · Вопрос {state.get('round_number', 1)}\n\n{item['q']}\n\n{rendered}\n\n"
+            f"❓ ВИКТОРИНА · Вопрос {state.get('round_number', 1)} · {self.game_difficulty_label(chat_id)}\n\n{item['q']}\n\n{rendered}\n\n"
             "Ответьте цифрой 1–4 или текстом ответа.",
             reply_markup=self.quiz_keyboard(),
         )
@@ -3197,13 +3294,14 @@ class AksakalBot:
 
     async def quiz_round_timer(self, chat_id: int, question_id: str):
         try:
-            await asyncio.sleep(45)
+            first_wait, second_wait = {1: (60, 45), 2: (45, 30), 3: (30, 20)}[self.game_difficulty(chat_id)]
+            await asyncio.sleep(first_wait)
             state = self.db.get_quiz_game(chat_id)
             if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
                 return
             if self.tg:
                 await self.tg.send(chat_id, "⏱ Подсказка: вариантов всего четыре — пора выбирать 😄")
-            await asyncio.sleep(30)
+            await asyncio.sleep(second_wait)
             state = self.db.get_quiz_game(chat_id)
             if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
                 return
@@ -3280,7 +3378,11 @@ class AksakalBot:
             await self.tg.send(chat_id, "🎭 «Кто я?» уже идёт. Пишите варианты.", reply_markup=self.whoami_keyboard())
             return
         self.db.start_game_session(chat_id, "whoami", 10, reset=True)
-        await self.tg.send(chat_id, "🎭 Начинаем «Кто я?»! Я даю факты, вы угадываете персонажа или человека. Первый получает +1. До 10 очков.")
+        await self.tg.send(
+            chat_id,
+            f"🎭 Начинаем «Кто я?»! Сложность: {self.game_difficulty_label(chat_id)}. "
+            "Я даю факты, вы угадываете персонажа или человека. Первый получает +1. До 10 очков.",
+        )
         await self.start_whoami_round(chat_id)
 
     async def start_whoami_round(self, chat_id: int, delay: float = 0):
@@ -3293,10 +3395,16 @@ class AksakalBot:
         answer = random.choice(answers or list(self.WHOAMI_ITEMS))
         self.db.set_whoami_round(chat_id, answer)
         state = self.db.get_whoami_game(chat_id) or {}
+        clues = self.WHOAMI_ITEMS[answer]
+        difficulty = self.game_difficulty(chat_id)
+        opening = clues[0]
+        if difficulty == 1 and len(clues) > 1:
+            opening += f"\n💡 Ещё факт: {clues[1]}"
+            self.db.advance_whoami_clue(chat_id)
         await self.tg.send(
             chat_id,
-            f"🎭 КТО Я? · Раунд {state.get('round_number', 1)}\n\n"
-            f"🗣 {self.WHOAMI_ITEMS[answer][0]}",
+            f"🎭 КТО Я? · Раунд {state.get('round_number', 1)} · {self.game_difficulty_label(chat_id)}\n\n"
+            f"🗣 {opening}",
             reply_markup=self.whoami_keyboard(),
         )
         self.set_game_timer(chat_id, self.whoami_round_timer(chat_id, answer))
@@ -3320,12 +3428,13 @@ class AksakalBot:
 
     async def whoami_round_timer(self, chat_id: int, answer: str):
         try:
-            await asyncio.sleep(35)
+            first_wait, second_wait = {1: (25, 40), 2: (35, 30), 3: (50, 25)}[self.game_difficulty(chat_id)]
+            await asyncio.sleep(first_wait)
             state = self.db.get_whoami_game(chat_id)
             if not state or not state.get("active") or str(state.get("answer") or "") != answer:
                 return
             await self.send_whoami_hint(chat_id, automatic=True)
-            await asyncio.sleep(30)
+            await asyncio.sleep(second_wait)
             state = self.db.get_whoami_game(chat_id)
             if not state or not state.get("active") or str(state.get("answer") or "") != answer:
                 return
@@ -3349,10 +3458,12 @@ class AksakalBot:
             return True
         self.db.touch_game_participant(chat_id, "whoami", user_id, display_name)
         ratio = difflib.SequenceMatcher(None, guess, answer).ratio()
+        difficulty = self.game_difficulty(chat_id)
+        ratio_cutoff = {1: 0.78, 2: 0.88, 3: 0.94}[difficulty]
         correct = (
             guess == answer
-            or (len(guess) >= 4 and (answer in guess or guess in answer))
-            or (len(guess) >= 4 and ratio >= 0.88)
+            or (difficulty <= 2 and len(guess) >= 4 and (answer in guess or guess in answer))
+            or (len(guess) >= 4 and ratio >= ratio_cutoff)
         )
         if correct:
             self.cancel_game_timer(chat_id)
@@ -3370,7 +3481,8 @@ class AksakalBot:
             self.game_tasks[chat_id] = task
             return True
         attempts = self.db.add_whoami_attempt(chat_id)
-        if attempts in {4, 8}:
+        hint_attempts = {1: {2, 5}, 2: {4, 8}, 3: {7}}[self.game_difficulty(chat_id)]
+        if attempts in hint_attempts:
             await self.send_whoami_hint(chat_id, automatic=True)
         return True
 
@@ -3380,6 +3492,7 @@ class AksakalBot:
         fixed = int(chat.get("fixed_hardness", 3))
         delay = int(chat.get("response_delay_seconds", 20))
         enabled = bool(chat.get("enabled", 1))
+        game_difficulty = str(chat.get("game_difficulty", "normal") or "normal").lower()
 
         def mark(label: str, active: bool) -> str:
             return ("✅ " if active else "") + label
@@ -3402,6 +3515,11 @@ class AksakalBot:
                     {"text": mark("40 сек", delay == 40), "callback_data": "set:time:40"},
                     {"text": mark("1 мин", delay == 60), "callback_data": "set:time:60"},
                     {"text": mark("3 мин", delay == 180), "callback_data": "set:time:180"},
+                ],
+                [
+                    {"text": mark("🎮 Лёгкий", game_difficulty == "easy"), "callback_data": "set:gamelevel:easy"},
+                    {"text": mark("🎮 Нормальный", game_difficulty == "normal"), "callback_data": "set:gamelevel:normal"},
+                    {"text": mark("🎮 Сложный", game_difficulty == "hard"), "callback_data": "set:gamelevel:hard"},
                 ],
                 [
                     {"text": mark("🟢 Включён", enabled), "callback_data": "set:bot:on"},
@@ -3433,8 +3551,9 @@ class AksakalBot:
             "⚙️ Настройки Аксакала\n"
             f"Жёсткость: {hardness}\n"
             f"Время ответа: {delay_label}\n"
+            f"Сложность игр: {game_level}\n"
             f"Состояние: {'включён' if chat.get('enabled', 1) else 'выключен'}\n\n"
-            "Здесь оставлены только основные настройки: жёсткость, задержка ответа и включение/выключение."
+            "Основные настройки: жёсткость общения, задержка ответа, сложность игр и включение/выключение."
         )
 
     async def show_settings(self, chat_id: int):
@@ -3597,6 +3716,9 @@ class AksakalBot:
             self.db.update_chat(chat_id, response_delay_seconds=int(value))
         elif section == "silence" and value in {"15", "30", "60", "180"}:
             self.db.update_chat(chat_id, silence_minutes=int(value))
+        elif section == "gamelevel" and value in {"easy", "normal", "hard"}:
+            self.db.update_chat(chat_id, game_difficulty=value)
+            self.refresh_active_game_timer(chat_id)
         elif section == "bot":
             self.db.update_chat(chat_id, enabled=1 if value == "on" else 0)
 
