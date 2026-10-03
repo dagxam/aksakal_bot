@@ -2775,8 +2775,8 @@ class AksakalBot:
                 return
             self.db.clear_crocodile_round(chat_id)
             if self.tg:
-                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
-            await self.start_crocodile_round(chat_id, delay=2)
+                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Новый раунд сразу.")
+            await self.start_crocodile_round(chat_id)
         except asyncio.CancelledError:
             return
 
@@ -2811,9 +2811,8 @@ class AksakalBot:
         word = str(game["word"])
         self.cancel_game_timer(chat_id)
         self.db.clear_crocodile_round(chat_id)
-        await self.tg.send(chat_id, f"⏭ Пропускаем. Было загадано: {word}. Новое слово через 2 секунды.")
-        task = asyncio.create_task(self.start_crocodile_round(chat_id, delay=2))
-        self.game_tasks[chat_id] = task
+        await self.tg.send(chat_id, f"⏭ Пропускаем. Было загадано: {word}. Новое слово сразу.")
+        await self.start_crocodile_round(chat_id)
 
     async def stop_crocodile_game(self, chat_id: int, announce: bool = True):
         assert self.tg
@@ -2868,13 +2867,13 @@ class AksakalBot:
                 f"🎉 {display_name} угадал! Слово: {word}.\n"
                 f"Счёт сессии: {stats['session_score']}/10. Сложность: {self.game_difficulty_label(chat_id)}.\n\n"
                 f"{self.session_score_text(chat_id, 'crocodile')}\n\n"
-                "Следующий раунд через 3 секунды…",
+                "Следующий раунд.",
             )
-            task = asyncio.create_task(self.start_crocodile_round(chat_id, delay=3))
-            self.game_tasks[chat_id] = task
+            await self.start_crocodile_round(chat_id)
             return True
 
         attempts = self.db.register_crocodile_attempt(chat_id)
+        await self.tg.send(chat_id, f"❌ {display_name}, не угадал. Пробуй ещё.")
         hint_attempts = {1: {3, 6}, 2: {5, 10}, 3: {8}}[self.game_difficulty(chat_id)]
         if attempts in hint_attempts:
             await self.send_crocodile_hint(chat_id, automatic=True)
@@ -2999,6 +2998,7 @@ class AksakalBot:
         cutoff = {1: 0.72, 2: 0.84, 3: 0.93}[self.game_difficulty(chat_id)]
         city = self.resolve_city(text, cutoff=cutoff)
         if not city:
+            await self.tg.send(chat_id, f"❌ {display_name}, не распознал такой город. Попробуй другой.")
             return True
 
         required = str(game.get("required_letter") or "").lower()
@@ -3159,8 +3159,8 @@ class AksakalBot:
                 return
             self.db.clear_hangman_round(chat_id)
             if self.tg:
-                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Следующий раунд…")
-            await self.start_hangman_round(chat_id, delay=2)
+                await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Новый раунд сразу.")
+            await self.start_hangman_round(chat_id)
         except asyncio.CancelledError:
             return
 
@@ -3179,7 +3179,7 @@ class AksakalBot:
 
         letters_only = re.sub(r"[^а-яa-z]", "", guess)
         if len(letters_only) != 1 and guess != word:
-            # Во время игры длинная обычная реплика не считается ошибкой.
+            await self.tg.send(chat_id, f"❌ {display_name}, назови одну букву или всё слово целиком.")
             return True
 
         self.db.touch_game_participant(chat_id, "hangman", user_id, display_name)
@@ -3212,10 +3212,9 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"🎉 {display_name} завершил слово «{solved_word}»! +1, счёт {stats['session_score']}/10.\n"
-                "Следующее слово через 3 секунды…",
+                "Следующее слово.",
             )
-            task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
-            self.game_tasks[chat_id] = task
+            await self.start_hangman_round(chat_id)
             return True
 
         max_misses = {1: 8, 2: 6, 3: 5}[self.game_difficulty(chat_id)]
@@ -3223,9 +3222,8 @@ class AksakalBot:
             self.cancel_game_timer(chat_id)
             missed_word = str(game["word"])
             self.db.clear_hangman_round(chat_id)
-            await self.tg.send(chat_id, f"💀 {max_misses} ошибок. Слово было: {missed_word}. Следующее через 3 секунды…")
-            task = asyncio.create_task(self.start_hangman_round(chat_id, delay=3))
-            self.game_tasks[chat_id] = task
+            await self.tg.send(chat_id, f"💀 {max_misses} ошибок. Слово было: {missed_word}. Следующее слово.")
+            await self.start_hangman_round(chat_id)
             return True
 
         await self.tg.send(
@@ -3307,8 +3305,8 @@ class AksakalBot:
             answer = str(state["answer"])
             self.db.clear_quiz_round(chat_id)
             if self.tg:
-                await self.tg.send(chat_id, f"⌛ Правильный ответ: {answer}. Следующий вопрос…")
-            await self.start_quiz_round(chat_id, delay=2)
+                await self.tg.send(chat_id, f"⌛ Правильный ответ: {answer}. Следующий вопрос сразу.")
+            await self.start_quiz_round(chat_id)
         except asyncio.CancelledError:
             return
 
@@ -3334,6 +3332,7 @@ class AksakalBot:
                     selected = option
                     break
         if not selected:
+            await self.tg.send(chat_id, f"❌ {display_name}, выбери вариант 1–4 или напиши текст ответа.")
             return True
 
         self.db.touch_game_participant(chat_id, "quiz", user_id, display_name)
@@ -3347,14 +3346,12 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"✅ {display_name} первым ответил правильно: {answer}. +1, счёт {stats['session_score']}/10.\n"
-                "Следующий вопрос через 3 секунды…",
+                "Следующий вопрос.",
             )
-            task = asyncio.create_task(self.start_quiz_round(chat_id, delay=3))
-            self.game_tasks[chat_id] = task
+            await self.start_quiz_round(chat_id)
         else:
-            attempts = self.db.add_quiz_attempt(chat_id)
-            if attempts <= 3:
-                await self.tg.send(chat_id, f"❌ {display_name}, не этот вариант.")
+            self.db.add_quiz_attempt(chat_id)
+            await self.tg.send(chat_id, f"❌ {display_name}, не этот вариант.")
         return True
 
     @staticmethod
@@ -3439,8 +3436,8 @@ class AksakalBot:
                 return
             self.db.clear_whoami_round(chat_id)
             if self.tg:
-                await self.tg.send(chat_id, f"⌛ Ответ: {answer}. Следующий раунд…")
-            await self.start_whoami_round(chat_id, delay=2)
+                await self.tg.send(chat_id, f"⌛ Ответ: {answer}. Следующий раунд сразу.")
+            await self.start_whoami_round(chat_id)
         except asyncio.CancelledError:
             return
 
@@ -3474,12 +3471,12 @@ class AksakalBot:
             await self.tg.send(
                 chat_id,
                 f"🎉 {display_name} угадал: {solved_answer}! +1, счёт {stats['session_score']}/10.\n"
-                "Следующий раунд через 3 секунды…",
+                "Следующий раунд.",
             )
-            task = asyncio.create_task(self.start_whoami_round(chat_id, delay=3))
-            self.game_tasks[chat_id] = task
+            await self.start_whoami_round(chat_id)
             return True
         attempts = self.db.add_whoami_attempt(chat_id)
+        await self.tg.send(chat_id, f"❌ {display_name}, не угадал. Пробуй ещё.")
         hint_attempts = {1: {2, 5}, 2: {4, 8}, 3: {7}}[self.game_difficulty(chat_id)]
         if attempts in hint_attempts:
             await self.send_whoami_hint(chat_id, automatic=True)
