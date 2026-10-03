@@ -70,6 +70,10 @@ jobs:
               chat = db.get_chat(-100123)
               assert chat["response_delay_seconds"] == 3
               assert chat["fixed_hardness"] == 5
+              assert chat["game_difficulty"] == "normal"
+              db.update_chat(-100123, game_difficulty="hard")
+              chat = db.get_chat(-100123)
+              assert chat["game_difficulty"] == "hard"
 
               ali = {"id": 7, "username": "ali", "first_name": "Али"}
               ali_id = db.touch_user(-100123, ali, "message")
@@ -190,15 +194,29 @@ jobs:
               assert "set:time:3" in callbacks
               assert "set:bot:on" in callbacks
               assert "set:bot:off" in callbacks
+              assert "set:gamelevel:easy" in callbacks
+              assert "set:gamelevel:normal" in callbacks
+              assert "set:gamelevel:hard" in callbacks
 
-              # В панели настроек оставлены только жёсткость, время ответа и вкл/выкл.
+              # Игровой центр и рейтинг не смешиваются с настройками,
+              # но глобальная сложность игр теперь настраивается здесь.
               assert not any(x.startswith("set:silence:") for x in callbacks)
               assert not any(x.startswith("set:game:") for x in callbacks)
               assert not any(x.startswith("set:rating:") for x in callbacks)
 
+              bot_for_level = object.__new__(AksakalBot)
+              bot_for_level.db = db
+              assert bot_for_level.game_difficulty(-100123) == 3
+              assert bot_for_level.game_difficulty_label(-100123) == "Сложный"
+              assert set(AksakalBot.QUIZ_LEVELS) == {1, 2, 3}
+              quiz_ids = {q["id"] for q in AksakalBot.QUIZ_QUESTIONS}
+              assert all(set(ids) <= quiz_ids for ids in AksakalBot.QUIZ_LEVELS.values())
+              assert all(AksakalBot.CROCODILE_LEVELS[level] for level in (1, 2, 3))
+
               settings_text = AksakalBot.settings_text(chat)
               assert "Жёсткость:" in settings_text
               assert "Время ответа:" in settings_text
+              assert "Сложность игр: Сложный" in settings_text
               assert "Состояние:" in settings_text
               assert "Оживление группы" not in settings_text
               print("database/bot smoke test OK")
