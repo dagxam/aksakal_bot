@@ -1208,13 +1208,27 @@ jobs:
                   bot.bot_user_id = 999
                   bot.bot_username = "aksakal_test"
 
-                  # Крокодил: запускается, принимает точный ответ, начисляет очко.
+                  # Крокодил: неверный ответ получает мгновенный ❌,
+                  # правильный — мгновенный ✅ и новый раунд без sleep.
                   await bot.start_crocodile_game(chat_id)
                   assert bot.active_game(chat_id) == "crocodile"
                   croc = db.get_crocodile_game(chat_id)
                   assert croc and croc["word"]
-                  await bot.handle_crocodile_guess(chat_id, 1, "Али", croc["word"], "message")
+                  before = len(bot.tg.messages)
+                  await asyncio.wait_for(
+                      bot.handle_crocodile_guess(chat_id, 1, "Али", "совсем неверно", "message"),
+                      timeout=0.5,
+                  )
+                  assert len(bot.tg.messages) > before
+                  assert bot.tg.messages[-1]["text"].startswith("❌")
+                  old_word = str(croc["word"])
+                  await asyncio.wait_for(
+                      bot.handle_crocodile_guess(chat_id, 1, "Али", old_word, "message"),
+                      timeout=0.5,
+                  )
                   assert db.game_session_top(chat_id, "crocodile")[0]["score"] == 1
+                  next_croc = db.get_crocodile_game(chat_id)
+                  assert next_croc["word"] and next_croc["word"] != old_word
                   await bot.stop_specific_game(chat_id, "crocodile")
                   await asyncio.sleep(0)
 
@@ -1233,8 +1247,20 @@ jobs:
                       if AksakalBot.normalize_city_name(city).startswith(required)
                       and AksakalBot.normalize_city_name(city) not in used
                   )
-                  await bot.handle_city_guess(chat_id, 2, "Магомед", city_answer, "message")
+                  before = len(bot.tg.messages)
+                  await asyncio.wait_for(
+                      bot.handle_city_guess(chat_id, 2, "Магомед", "несуществующийгород", "message"),
+                      timeout=0.5,
+                  )
+                  assert len(bot.tg.messages) > before
+                  assert bot.tg.messages[-1]["text"].startswith("❌")
+                  await asyncio.wait_for(
+                      bot.handle_city_guess(chat_id, 2, "Магомед", city_answer, "message"),
+                      timeout=0.5,
+                  )
                   assert db.game_session_top(chat_id, "cities")[0]["score"] == 1
+                  city_after = db.get_city_game(chat_id)
+                  assert city_after["current_city"] != city_answer
                   await bot.stop_specific_game(chat_id, "cities")
                   await asyncio.sleep(0)
 
@@ -1242,8 +1268,21 @@ jobs:
                   await bot.start_hangman_game(chat_id)
                   assert bot.active_game(chat_id) == "hangman"
                   hang = db.get_hangman_game(chat_id)
-                  await bot.handle_hangman_guess(chat_id, 3, "Расул", hang["word"], "message")
+                  old_hang_word = str(hang["word"])
+                  before = len(bot.tg.messages)
+                  await asyncio.wait_for(
+                      bot.handle_hangman_guess(chat_id, 3, "Расул", "неверноеслово", "message"),
+                      timeout=0.5,
+                  )
+                  assert len(bot.tg.messages) > before
+                  assert bot.tg.messages[-1]["text"].startswith("❌")
+                  await asyncio.wait_for(
+                      bot.handle_hangman_guess(chat_id, 3, "Расул", old_hang_word, "message"),
+                      timeout=0.5,
+                  )
                   assert db.game_session_top(chat_id, "hangman")[0]["score"] == 1
+                  hang_after = db.get_hangman_game(chat_id)
+                  assert hang_after["word"] and hang_after["word"] != old_hang_word
                   await bot.stop_specific_game(chat_id, "hangman")
                   await asyncio.sleep(0)
 
@@ -1251,8 +1290,25 @@ jobs:
                   await bot.start_quiz_game(chat_id)
                   assert bot.active_game(chat_id) == "quiz"
                   quiz = db.get_quiz_game(chat_id)
-                  await bot.handle_quiz_guess(chat_id, 4, "Патимат", quiz["answer"], "message")
+                  old_question = str(quiz["question_id"])
+                  wrong_option = next(
+                      option for option in str(quiz["options"]).splitlines()
+                      if option != quiz["answer"]
+                  )
+                  before = len(bot.tg.messages)
+                  await asyncio.wait_for(
+                      bot.handle_quiz_guess(chat_id, 4, "Патимат", wrong_option, "message"),
+                      timeout=0.5,
+                  )
+                  assert len(bot.tg.messages) > before
+                  assert bot.tg.messages[-1]["text"].startswith("❌")
+                  await asyncio.wait_for(
+                      bot.handle_quiz_guess(chat_id, 4, "Патимат", quiz["answer"], "message"),
+                      timeout=0.5,
+                  )
                   assert db.game_session_top(chat_id, "quiz")[0]["score"] == 1
+                  quiz_after = db.get_quiz_game(chat_id)
+                  assert quiz_after["question_id"] and quiz_after["question_id"] != old_question
                   await bot.stop_specific_game(chat_id, "quiz")
                   await asyncio.sleep(0)
 
@@ -1260,8 +1316,21 @@ jobs:
                   await bot.start_whoami_game(chat_id)
                   assert bot.active_game(chat_id) == "whoami"
                   who = db.get_whoami_game(chat_id)
-                  await bot.handle_whoami_guess(chat_id, 5, "Мурад", who["answer"], "message")
+                  old_answer = str(who["answer"])
+                  before = len(bot.tg.messages)
+                  await asyncio.wait_for(
+                      bot.handle_whoami_guess(chat_id, 5, "Мурад", "совсем не тот", "message"),
+                      timeout=0.5,
+                  )
+                  assert len(bot.tg.messages) > before
+                  assert bot.tg.messages[-1]["text"].startswith("❌")
+                  await asyncio.wait_for(
+                      bot.handle_whoami_guess(chat_id, 5, "Мурад", old_answer, "message"),
+                      timeout=0.5,
+                  )
                   assert db.game_session_top(chat_id, "whoami")[0]["score"] == 1
+                  who_after = db.get_whoami_game(chat_id)
+                  assert who_after["answer"] and who_after["answer"] != old_answer
                   await bot.stop_specific_game(chat_id, "whoami")
                   await asyncio.sleep(0)
 
