@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS chats (
     fixed_hardness INTEGER NOT NULL DEFAULT 3,
     response_delay_seconds INTEGER NOT NULL DEFAULT 20,
     silence_nudge_count INTEGER NOT NULL DEFAULT 0,
-    manual_quiet INTEGER NOT NULL DEFAULT 0
+    manual_quiet INTEGER NOT NULL DEFAULT 0,
+    game_difficulty TEXT NOT NULL DEFAULT 'normal'
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -312,6 +313,8 @@ class Database:
                 conn.execute("ALTER TABLE chats ADD COLUMN silence_nudge_count INTEGER NOT NULL DEFAULT 0")
             if "manual_quiet" not in columns:
                 conn.execute("ALTER TABLE chats ADD COLUMN manual_quiet INTEGER NOT NULL DEFAULT 0")
+            if "game_difficulty" not in columns:
+                conn.execute("ALTER TABLE chats ADD COLUMN game_difficulty TEXT NOT NULL DEFAULT 'normal'")
 
             crocodile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(crocodile_games)").fetchall()}
             if "skip_used" not in crocodile_columns:
@@ -434,7 +437,7 @@ class Database:
             return dict(row) if row else None
 
     def update_chat(self, chat_id: int, **values):
-        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness", "response_delay_seconds", "silence_nudge_count", "manual_quiet"}
+        allowed = {"enabled", "roast_level", "min_interval_minutes", "silence_minutes", "last_bot_message_at", "last_activity_at", "hardness_mode", "fixed_hardness", "response_delay_seconds", "silence_nudge_count", "manual_quiet", "game_difficulty"}
         pairs = [(k, v) for k, v in values.items() if k in allowed]
         if not pairs:
             return
