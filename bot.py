@@ -2773,7 +2773,6 @@ class AksakalBot:
             game = self.db.get_crocodile_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
-            self.db.clear_crocodile_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Новый раунд сразу.")
             await self.start_crocodile_round(chat_id)
@@ -2810,7 +2809,6 @@ class AksakalBot:
             return
         word = str(game["word"])
         self.cancel_game_timer(chat_id)
-        self.db.clear_crocodile_round(chat_id)
         await self.tg.send(chat_id, f"⏭ Пропускаем. Было загадано: {word}. Новое слово сразу.")
         await self.start_crocodile_round(chat_id)
 
@@ -2856,7 +2854,6 @@ class AksakalBot:
         if correct:
             word = str(game["word"])
             self.cancel_game_timer(chat_id)
-            self.db.clear_crocodile_round(chat_id)
             difficulty = self.game_difficulty(chat_id)
             self.db.add_crocodile_score(chat_id, user_id, display_name, 1)
             stats, won = await self.award_game_point(chat_id, "crocodile", user_id, display_name)
@@ -3157,7 +3154,6 @@ class AksakalBot:
             game = self.db.get_hangman_game(chat_id)
             if not game or not game.get("active") or str(game.get("word") or "") != word:
                 return
-            self.db.clear_hangman_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Время. Слово было: {word}. Новый раунд сразу.")
             await self.start_hangman_round(chat_id)
@@ -3205,7 +3201,6 @@ class AksakalBot:
         if solved:
             self.cancel_game_timer(chat_id)
             solved_word = str(game["word"])
-            self.db.clear_hangman_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "hangman", user_id, display_name)
             if won:
                 return True
@@ -3221,7 +3216,6 @@ class AksakalBot:
         if misses >= max_misses:
             self.cancel_game_timer(chat_id)
             missed_word = str(game["word"])
-            self.db.clear_hangman_round(chat_id)
             await self.tg.send(chat_id, f"💀 {max_misses} ошибок. Слово было: {missed_word}. Следующее слово.")
             await self.start_hangman_round(chat_id)
             return True
@@ -3303,7 +3297,6 @@ class AksakalBot:
             if not state or not state.get("active") or str(state.get("question_id") or "") != question_id:
                 return
             answer = str(state["answer"])
-            self.db.clear_quiz_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Правильный ответ: {answer}. Следующий вопрос сразу.")
             await self.start_quiz_round(chat_id)
@@ -3339,7 +3332,6 @@ class AksakalBot:
         answer = str(state.get("answer") or "")
         if self.normalize_crocodile_guess(selected) == self.normalize_crocodile_guess(answer):
             self.cancel_game_timer(chat_id)
-            self.db.clear_quiz_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "quiz", user_id, display_name)
             if won:
                 return True
@@ -3434,7 +3426,6 @@ class AksakalBot:
             state = self.db.get_whoami_game(chat_id)
             if not state or not state.get("active") or str(state.get("answer") or "") != answer:
                 return
-            self.db.clear_whoami_round(chat_id)
             if self.tg:
                 await self.tg.send(chat_id, f"⌛ Ответ: {answer}. Следующий раунд сразу.")
             await self.start_whoami_round(chat_id)
@@ -3464,7 +3455,6 @@ class AksakalBot:
         if correct:
             self.cancel_game_timer(chat_id)
             solved_answer = str(state["answer"])
-            self.db.clear_whoami_round(chat_id)
             stats, won = await self.award_game_point(chat_id, "whoami", user_id, display_name)
             if won:
                 return True
