@@ -1285,7 +1285,6 @@ class AksakalBot:
         fixed = int(chat.get("fixed_hardness", 3))
         hardness = "AUTO" if mode == "auto" else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
         delay = int(chat.get("response_delay_seconds", 20))
-        game_level = AksakalBot.game_difficulty_label_from_chat(chat)
         delay_label = {0: "сразу", 3: "3 сек", 5: "5 сек", 20: "20 сек", 40: "40 сек", 60: "1 мин", 180: "3 мин"}.get(delay, f"{delay} сек")
         game_level = self.game_difficulty_label_from_chat(chat)
         title = (chat.get("title") or str(target_chat_id)).strip()
@@ -3538,6 +3537,7 @@ class AksakalBot:
             else ("Нормальный" if fixed <= 2 else "Злой" if fixed <= 4 else "Супер злой")
         )
         delay = int(chat.get("response_delay_seconds", 20))
+        game_level = AksakalBot.game_difficulty_label_from_chat(chat)
         delay_label = {
             0: "сразу",
             3: "3 сек",
