@@ -4036,6 +4036,15 @@ class AksakalBot:
             if not await self.is_admin(chat_id, user_id):
                 return
             c = self.db.get_chat(chat_id) or {}
+            last_refresh = int(self.db.get_game_content_meta("refresh_success_at", "0") or 0)
+            refresh_label = (
+                datetime.fromtimestamp(last_refresh, tz=timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+                if last_refresh else "ещё не обновлялась"
+            )
+            online_counts = {
+                kind: self.db.game_content_count(kind)
+                for kind in ("quiz", "crocodile", "hangman", "whoami", "city")
+            }
             await self.send_admin_private(
                 chat_id,
                 user_id,
@@ -4047,6 +4056,9 @@ class AksakalBot:
                 f"Задержка ответа: {c.get('response_delay_seconds',20)} сек\n"
                 f"Оживление после: {c.get('silence_minutes',180)} мин тишины\n"
                 f"Контекст: {len(self.db.recent_context(chat_id, config.context_message_limit))} сообщений\n"
+                f"Онлайн-база игр: викторина {online_counts['quiz']}, крокодил {online_counts['crocodile']}, "
+                f"виселица {online_counts['hangman']}, кто я {online_counts['whoami']}, города {online_counts['city']}\n"
+                f"Последнее обновление игр: {refresh_label}\n"
                 f"Обучение юмору: {self.db.feedback_stats(chat_id)['signals']} сигналов "
                 f"(баланс {self.db.feedback_stats(chat_id)['score']:+d})",
             )
