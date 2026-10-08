@@ -582,6 +582,22 @@ class Database:
                 (int(time.time()), content_type, content_key),
             )
 
+    def find_game_content_by_answer(self, content_type: str, answer: str) -> dict[str, Any] | None:
+        normalized = (answer or "").strip().lower()
+        if not normalized:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM game_content
+                WHERE content_type=? AND LOWER(answer)=?
+                ORDER BY fetched_at DESC
+                LIMIT 1
+                """,
+                (content_type, normalized),
+            ).fetchone()
+        return dict(row) if row else None
+
     def set_game_content_meta(self, key: str, value: str):
         with self.connect() as conn:
             conn.execute(
