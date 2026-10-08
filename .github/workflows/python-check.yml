@@ -228,6 +228,174 @@ jobs:
                       pass
           PY
 
+      - name: Online game content cache smoke test
+        run: |
+          python - <<'PY'
+          import os
+          import tempfile
+
+          from bot import AksakalBot
+          from db import Database
+          from game_content import GameContentUpdater
+
+          def node(value):
+              return {"value": str(value)}
+
+          fd, path = tempfile.mkstemp(suffix=".db")
+          os.close(fd)
+          try:
+              db = Database(path)
+              updater = GameContentUpdater(db)
+
+              country_rows = [
+                  {
+                      "country": node("http://www.wikidata.org/entity/Q159"),
+                      "countryLabel": node("Россия"),
+                      "capitalLabel": node("Москва"),
+                      "continentLabel": node("Европа"),
+                      "currencyLabel": node("российский рубль"),
+                      "languageLabel": node("русский язык"),
+                  },
+                  {
+                      "country": node("http://www.wikidata.org/entity/Q183"),
+                      "countryLabel": node("Германия"),
+                      "capitalLabel": node("Берлин"),
+                      "continentLabel": node("Европа"),
+                      "currencyLabel": node("евро"),
+                      "languageLabel": node("немецкий язык"),
+                  },
+                  {
+                      "country": node("http://www.wikidata.org/entity/Q142"),
+                      "countryLabel": node("Франция"),
+                      "capitalLabel": node("Париж"),
+                      "continentLabel": node("Европа"),
+                      "currencyLabel": node("евро"),
+                      "languageLabel": node("французский язык"),
+                  },
+                  {
+                      "country": node("http://www.wikidata.org/entity/Q38"),
+                      "countryLabel": node("Италия"),
+                      "capitalLabel": node("Рим"),
+                      "continentLabel": node("Европа"),
+                      "currencyLabel": node("евро"),
+                      "languageLabel": node("итальянский язык"),
+                  },
+              ]
+              element_rows = [
+                  {
+                      "element": node("http://www.wikidata.org/entity/Q677"),
+                      "elementLabel": node("железо"),
+                      "symbol": node("Fe"),
+                      "atomicNumber": node("26"),
+                  },
+                  {
+                      "element": node("http://www.wikidata.org/entity/Q629"),
+                      "elementLabel": node("кислород"),
+                      "symbol": node("O"),
+                      "atomicNumber": node("8"),
+                  },
+                  {
+                      "element": node("http://www.wikidata.org/entity/Q658"),
+                      "elementLabel": node("золото"),
+                      "symbol": node("Au"),
+                      "atomicNumber": node("79"),
+                  },
+                  {
+                      "element": node("http://www.wikidata.org/entity/Q663"),
+                      "elementLabel": node("алюминий"),
+                      "symbol": node("Al"),
+                      "atomicNumber": node("13"),
+                  },
+              ]
+              people_rows = [
+                  {
+                      "person": node("http://www.wikidata.org/entity/Q937"),
+                      "personLabel": node("Альберт Эйнштейн"),
+                      "occupationLabel": node("физик"),
+                      "countryLabel": node("Германия"),
+                      "birth": node("1879-03-14T00:00:00Z"),
+                  },
+                  {
+                      "person": node("http://www.wikidata.org/entity/Q7322"),
+                      "personLabel": node("Юрий Гагарин"),
+                      "occupationLabel": node("космонавт"),
+                      "countryLabel": node("СССР"),
+                      "birth": node("1934-03-09T00:00:00Z"),
+                  },
+              ]
+              city_rows = [
+                  {
+                      "city": node("http://www.wikidata.org/entity/Q649"),
+                      "cityLabel": node("Москва"),
+                      "countryLabel": node("Россия"),
+                      "population": node("13000000"),
+                  },
+                  {
+                      "city": node("http://www.wikidata.org/entity/Q64"),
+                      "cityLabel": node("Берлин"),
+                      "countryLabel": node("Германия"),
+                      "population": node("3700000"),
+                  },
+                  {
+                      "city": node("http://www.wikidata.org/entity/Q90"),
+                      "cityLabel": node("Париж"),
+                      "countryLabel": node("Франция"),
+                      "population": node("2100000"),
+                  },
+                  {
+                      "city": node("http://www.wikidata.org/entity/Q220"),
+                      "cityLabel": node("Рим"),
+                      "countryLabel": node("Италия"),
+                      "population": node("2800000"),
+                  },
+              ]
+
+              items = []
+              items += updater._country_content(country_rows)
+              items += updater._element_content(element_rows)
+              items += updater._people_content(people_rows)
+              items += updater._city_content(city_rows)
+              items += updater._city_quiz_content(city_rows)
+              assert items
+              assert db.upsert_game_content(items) == len(items)
+
+              for kind in ("quiz", "crocodile", "hangman", "whoami", "city"):
+                  assert db.game_content_count(kind) > 0, kind
+
+              bot = object.__new__(AksakalBot)
+              bot.db = db
+              first = bot.pick_cached_game_content("quiz", difficulty=1)
+              assert first and first["title"] and first["answer"]
+              second = bot.pick_cached_game_content(
+                  "quiz",
+                  difficulty=1,
+                  previous_key=str(first["content_key"]),
+              )
+              assert second and second["content_key"] != first["content_key"]
+
+              who = bot.pick_cached_game_content("whoami", difficulty=2)
+              assert who and who["answer"] in {"Альберт Эйнштейн", "Юрий Гагарин"}
+              clues = bot.whoami_clues(str(who["answer"]))
+              assert len(clues) >= 2
+
+              croc = bot.pick_cached_game_content("crocodile", difficulty=1)
+              assert croc and croc["answer"]
+              assert bot.crocodile_clues(str(croc["answer"]))
+
+              cities = bot.city_names()
+              assert "Москва" in cities and "Берлин" in cities
+
+              db.set_game_content_meta("refresh_success_at", "123")
+              assert db.get_game_content_meta("refresh_success_at") == "123"
+              print("online game content cache smoke test OK")
+          finally:
+              for suffix in ("", "-shm", "-wal"):
+                  try:
+                      os.remove(path + suffix)
+                  except FileNotFoundError:
+                      pass
+          PY
+
       - name: Meta-leak filter smoke test
         run: |
           python - <<'PY'
