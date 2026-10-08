@@ -314,6 +314,7 @@ jobs:
                       "occupationLabel": node("физик"),
                       "countryLabel": node("Германия"),
                       "birth": node("1879-03-14T00:00:00Z"),
+                      "sitelinks": node("180"),
                   },
                   {
                       "person": node("http://www.wikidata.org/entity/Q7322"),
@@ -321,6 +322,7 @@ jobs:
                       "occupationLabel": node("космонавт"),
                       "countryLabel": node("СССР"),
                       "birth": node("1934-03-09T00:00:00Z"),
+                      "sitelinks": node("80"),
                   },
               ]
               city_rows = [
