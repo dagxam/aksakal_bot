@@ -583,18 +583,18 @@ class Database:
             )
 
     def find_game_content_by_answer(self, content_type: str, answer: str) -> dict[str, Any] | None:
-        normalized = (answer or "").strip().lower()
-        if not normalized:
+        value = (answer or "").strip()
+        if not value:
             return None
         with self.connect() as conn:
             row = conn.execute(
                 """
                 SELECT * FROM game_content
-                WHERE content_type=? AND LOWER(answer)=?
+                WHERE content_type=? AND answer=?
                 ORDER BY fetched_at DESC
                 LIMIT 1
                 """,
-                (content_type, normalized),
+                (content_type, value),
             ).fetchone()
         return dict(row) if row else None
 
