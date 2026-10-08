@@ -12,6 +12,7 @@ import aiohttp
 
 from config import config
 from db import Database
+from game_content import GameContentUpdater
 from generator import PhraseGenerator
 
 
@@ -658,6 +659,7 @@ class AksakalBot:
         if not config.telegram_token:
             raise SystemExit("TELEGRAM_BOT_TOKEN не задан. Скопируйте .env.example в .env")
         self.db = Database(config.database_path)
+        self.game_content = GameContentUpdater(self.db)
         self.generator = PhraseGenerator(
             enabled=config.ai_enabled,
             groq_api_key=config.groq_api_key,
@@ -1728,10 +1730,12 @@ class AksakalBot:
             print(self.ai_diagnostics())
             await self.resume_active_games()
             worker = asyncio.create_task(self.silence_worker())
+            content_worker = asyncio.create_task(self.game_content.worker(tg.session))
             try:
                 await self.poll()
             finally:
                 worker.cancel()
+                content_worker.cancel()
 
     async def configure_bot_profile(self):
         """Синхронизирует профиль только при реальном изменении и никогда не роняет запуск."""
