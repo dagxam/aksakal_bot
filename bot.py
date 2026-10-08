@@ -2400,6 +2400,78 @@ class AksakalBot:
     def game_difficulty_label(self, chat_id: int) -> str:
         return {1: "Лёгкий", 2: "Нормальный", 3: "Сложный"}[self.game_difficulty(chat_id)]
 
+    def pick_cached_game_content(
+        self,
+        content_type: str,
+        difficulty: int = 0,
+        previous_answer: str = "",
+        previous_key: str = "",
+    ) -> dict[str, Any] | None:
+        rows = self.db.list_game_content(content_type, 1200)
+        previous_norm = self.normalize_crocodile_guess(previous_answer)
+        candidates = []
+        for row in rows:
+            row_difficulty = int(row.get("difficulty", 0) or 0)
+            if difficulty and row_difficulty not in {0, difficulty}:
+                continue
+            if previous_key and str(row.get("content_key") or "") == previous_key:
+                continue
+            answer = str(row.get("answer") or "")
+            if previous_norm and self.normalize_crocodile_guess(answer) == previous_norm:
+                continue
+            candidates.append(row)
+        if not candidates:
+            return None
+
+        candidates.sort(
+            key=lambda row: (
+                int(row.get("use_count", 0) or 0),
+                int(row.get("last_used_at", 0) or 0),
+            )
+        )
+        best_use = int(candidates[0].get("use_count", 0) or 0)
+        least_used = [x for x in candidates if int(x.get("use_count", 0) or 0) == best_use][:40]
+        item = random.choice(least_used or candidates[:20])
+        self.db.mark_game_content_used(content_type, str(item.get("content_key") or ""))
+        return item
+
+    def crocodile_clues(self, word: str) -> tuple[str, ...]:
+        local = self.CROCODILE_WORDS.get(word)
+        if local:
+            return tuple(local)
+        item = self.db.find_game_content_by_answer("crocodile", word)
+        if not item:
+            return ()
+        return tuple(
+            str(item.get(key) or "").strip()
+            for key in ("clue1", "clue2", "clue3")
+            if str(item.get(key) or "").strip()
+        )
+
+    def whoami_clues(self, answer: str) -> tuple[str, ...]:
+        local = self.WHOAMI_ITEMS.get(answer)
+        if local:
+            return tuple(local)
+        item = self.db.find_game_content_by_answer("whoami", answer)
+        if not item:
+            return ()
+        return tuple(
+            str(item.get(key) or "").strip()
+            for key in ("clue1", "clue2", "clue3")
+            if str(item.get(key) or "").strip()
+        )
+
+    def city_names(self) -> tuple[str, ...]:
+        values = list(self.CITY_NAMES)
+        seen = {self.normalize_city_name(x) for x in values}
+        for row in self.db.list_game_content("city", 1200):
+            city = str(row.get("answer") or "").strip()
+            normalized = self.normalize_city_name(city)
+            if city and normalized and normalized not in seen:
+                seen.add(normalized)
+                values.append(city)
+        return tuple(values)
+
     def refresh_active_game_timer(self, chat_id: int):
         game = self.active_game(chat_id)
         if not game:
@@ -2743,16 +2815,33 @@ class AksakalBot:
             return
 
         difficulty = self.game_difficulty(chat_id)
-        previous = self.normalize_crocodile_guess(str(game.get("word") or ""))
-        level_words = [
-            word for word in self.CROCODILE_LEVELS.get(difficulty, ())
-            if word in self.CROCODILE_WORDS and self.normalize_crocodile_guess(word) != previous
-        ]
-        word = random.choice(level_words or list(self.CROCODILE_WORDS))
+        previous_word = str(game.get("word") or "")
+        previous = self.normalize_crocodile_guess(previous_word)
+        cached = self.pick_cached_game_content(
+            "crocodile",
+            difficulty=difficulty,
+            previous_answer=previous_word,
+        )
+        if cached:
+            word = str(cached.get("answer") or "").strip()
+            clues = tuple(
+                str(cached.get(key) or "").strip()
+                for key in ("clue1", "clue2", "clue3")
+                if str(cached.get(key) or "").strip()
+            )
+        else:
+            level_words = [
+                word for word in self.CROCODILE_LEVELS.get(difficulty, ())
+                if word in self.CROCODILE_WORDS and self.normalize_crocodile_guess(word) != previous
+            ]
+            word = random.choice(level_words or list(self.CROCODILE_WORDS))
+            clues = tuple(self.CROCODILE_WORDS[word])
+        if not word or not clues:
+            return
         self.db.set_crocodile_round(chat_id, word)
         fresh = self.db.get_crocodile_game(chat_id) or {}
         round_number = int(fresh.get("round_number", 1) or 1)
-        clue = self.CROCODILE_WORDS[word][0]
+        clue = clues[0]
         labels = {1: "лёгкая", 2: "нормальная", 3: "сложная"}
         sent = await self.tg.send(
             chat_id,
@@ -2789,7 +2878,7 @@ class AksakalBot:
         if not game or not game.get("active") or not game.get("word"):
             return
         word = str(game["word"])
-        clues = self.CROCODILE_WORDS.get(word)
+        clues = self.crocodile_clues(word)
         if not clues:
             return
         current_index = int(game.get("clue_index", 0) or 0)
@@ -2890,15 +2979,21 @@ class AksakalBot:
         return ""
 
     @classmethod
-    def city_lookup(cls) -> dict[str, str]:
-        return {cls.normalize_city_name(city): city for city in cls.CITY_NAMES}
+    def city_lookup(cls, cities: tuple[str, ...] | list[str] | None = None) -> dict[str, str]:
+        source = cities if cities is not None else cls.CITY_NAMES
+        return {cls.normalize_city_name(city): city for city in source}
 
     @classmethod
-    def resolve_city(cls, text: str, cutoff: float = 0.84) -> str | None:
+    def resolve_city(
+        cls,
+        text: str,
+        cutoff: float = 0.84,
+        cities: tuple[str, ...] | list[str] | None = None,
+    ) -> str | None:
         normalized = cls.normalize_city_name(text)
         if not normalized or len(normalized) < 2:
             return None
-        lookup = cls.city_lookup()
+        lookup = cls.city_lookup(cities)
         if normalized in lookup:
             return lookup[normalized]
         matches = difflib.get_close_matches(normalized, list(lookup), n=1, cutoff=cutoff)
@@ -2922,13 +3017,14 @@ class AksakalBot:
             )
             return
 
-        lookup = self.city_lookup()
+        all_cities = self.city_names()
+        lookup = self.city_lookup(all_cities)
         cities = list(lookup.values())
         random.shuffle(cities)
         first = ""
         for candidate in cities:
             required = self.city_last_letter(candidate)
-            if any(self.normalize_city_name(x).startswith(required) for x in self.CITY_NAMES):
+            if any(self.normalize_city_name(x).startswith(required) for x in all_cities):
                 first = candidate
                 break
         first = first or random.choice(cities)
@@ -2997,7 +3093,8 @@ class AksakalBot:
             return True
 
         cutoff = {1: 0.72, 2: 0.84, 3: 0.93}[self.game_difficulty(chat_id)]
-        city = self.resolve_city(text, cutoff=cutoff)
+        all_cities = self.city_names()
+        city = self.resolve_city(text, cutoff=cutoff, cities=all_cities)
         if not city:
             await self.tg.send(chat_id, f"❌ {display_name}, не распознал такой город. Попробуй другой.")
             return True
@@ -3027,13 +3124,13 @@ class AksakalBot:
 
         bot_letter = self.city_last_letter(city)
         candidates = [
-            candidate for candidate in self.CITY_NAMES
+            candidate for candidate in all_cities
             if self.normalize_city_name(candidate).startswith(bot_letter)
             and self.normalize_city_name(candidate) not in used
         ]
         if not candidates:
             remaining = [
-                candidate for candidate in self.CITY_NAMES
+                candidate for candidate in all_cities
                 if self.normalize_city_name(candidate) not in used
             ]
             if not remaining:
@@ -3119,13 +3216,22 @@ class AksakalBot:
             length = len(self.normalize_crocodile_guess(item[0]).replace(" ", "").replace("-", ""))
             return 1 if length <= 7 else 2 if length <= 9 else 3
 
-        choices = [
-            x for x in self.HANGMAN_WORDS
-            if x[0] != previous and word_level(x) == difficulty
-        ]
-        if not choices:
-            choices = [x for x in self.HANGMAN_WORDS if x[0] != previous]
-        word, hint = random.choice(choices or list(self.HANGMAN_WORDS))
+        cached = self.pick_cached_game_content(
+            "hangman",
+            difficulty=difficulty,
+            previous_answer=previous,
+        )
+        if cached:
+            word = str(cached.get("answer") or "").strip()
+            hint = str(cached.get("clue1") or cached.get("category") or "слово из общей базы").strip()
+        else:
+            choices = [
+                x for x in self.HANGMAN_WORDS
+                if x[0] != previous and word_level(x) == difficulty
+            ]
+            if not choices:
+                choices = [x for x in self.HANGMAN_WORDS if x[0] != previous]
+            word, hint = random.choice(choices or list(self.HANGMAN_WORDS))
         max_misses = {1: 8, 2: 6, 3: 5}[difficulty]
         self.db.set_hangman_round(chat_id, word, hint)
         game = self.db.get_hangman_game(chat_id) or {}
@@ -3277,13 +3383,31 @@ class AksakalBot:
         current = self.db.get_quiz_game(chat_id)
         previous = str(current.get("question_id") or "") if current else ""
         difficulty = self.game_difficulty(chat_id)
-        allowed_ids = set(self.QUIZ_LEVELS.get(difficulty, ()))
-        choices = [
-            q for q in self.QUIZ_QUESTIONS
-            if q["id"] != previous and q["id"] in allowed_ids
-        ]
-        item = random.choice(choices or [q for q in self.QUIZ_QUESTIONS if q["id"] != previous] or list(self.QUIZ_QUESTIONS))
-        options = tuple(item["options"])
+        previous_cache_key = previous[4:] if previous.startswith("net:") else ""
+        cached = self.pick_cached_game_content(
+            "quiz",
+            difficulty=difficulty,
+            previous_key=previous_cache_key,
+        )
+        if cached:
+            options = tuple(x for x in str(cached.get("options") or "").splitlines() if x.strip())
+            if len(options) >= 2 and str(cached.get("title") or "").strip() and str(cached.get("answer") or "").strip():
+                item = {
+                    "id": "net:" + str(cached.get("content_key") or ""),
+                    "q": str(cached.get("title") or ""),
+                    "a": str(cached.get("answer") or ""),
+                    "options": options,
+                }
+            else:
+                cached = None
+        if not cached:
+            allowed_ids = set(self.QUIZ_LEVELS.get(difficulty, ()))
+            choices = [
+                q for q in self.QUIZ_QUESTIONS
+                if q["id"] != previous and q["id"] in allowed_ids
+            ]
+            item = random.choice(choices or [q for q in self.QUIZ_QUESTIONS if q["id"] != previous] or list(self.QUIZ_QUESTIONS))
+            options = tuple(item["options"])
         self.db.set_quiz_round(chat_id, str(item["id"]), str(item["a"]), str(item["q"]), "\n".join(options))
         state = self.db.get_quiz_game(chat_id) or {}
         rendered = "\n".join(f"{i + 1}. {opt}" for i, opt in enumerate(options))
@@ -3391,11 +3515,26 @@ class AksakalBot:
             await asyncio.sleep(delay)
         current = self.db.get_whoami_game(chat_id)
         previous = str(current.get("answer") or "") if current else ""
-        answers = [x for x in self.WHOAMI_ITEMS if x != previous]
-        answer = random.choice(answers or list(self.WHOAMI_ITEMS))
+        cached = self.pick_cached_game_content(
+            "whoami",
+            difficulty=self.game_difficulty(chat_id),
+            previous_answer=previous,
+        )
+        if cached:
+            answer = str(cached.get("answer") or "").strip()
+            clues = tuple(
+                str(cached.get(key) or "").strip()
+                for key in ("clue1", "clue2", "clue3")
+                if str(cached.get(key) or "").strip()
+            )
+        else:
+            answers = [x for x in self.WHOAMI_ITEMS if x != previous]
+            answer = random.choice(answers or list(self.WHOAMI_ITEMS))
+            clues = tuple(self.WHOAMI_ITEMS[answer])
+        if not answer or not clues:
+            return
         self.db.set_whoami_round(chat_id, answer)
         state = self.db.get_whoami_game(chat_id) or {}
-        clues = self.WHOAMI_ITEMS[answer]
         difficulty = self.game_difficulty(chat_id)
         opening = clues[0]
         if difficulty == 1 and len(clues) > 1:
@@ -3415,7 +3554,7 @@ class AksakalBot:
         if not state or not state.get("active"):
             return
         answer = str(state.get("answer") or "")
-        clues = self.WHOAMI_ITEMS.get(answer)
+        clues = self.whoami_clues(answer)
         if not clues:
             return
         idx = int(state.get("clue_index", 0) or 0)
