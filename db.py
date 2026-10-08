@@ -294,6 +294,33 @@ CREATE TABLE IF NOT EXISTS whoami_games (
     started_at INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS game_content (
+    content_type TEXT NOT NULL,
+    content_key TEXT NOT NULL,
+    difficulty INTEGER NOT NULL DEFAULT 0,
+    title TEXT NOT NULL DEFAULT '',
+    answer TEXT NOT NULL DEFAULT '',
+    options TEXT NOT NULL DEFAULT '',
+    clue1 TEXT NOT NULL DEFAULT '',
+    clue2 TEXT NOT NULL DEFAULT '',
+    clue3 TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    fetched_at INTEGER NOT NULL DEFAULT 0,
+    last_used_at INTEGER NOT NULL DEFAULT 0,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(content_type, content_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_game_content_pick
+ON game_content(content_type, difficulty, use_count, last_used_at);
+
+CREATE TABLE IF NOT EXISTS game_content_meta (
+    meta_key TEXT PRIMARY KEY,
+    meta_value TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -444,6 +471,135 @@ class Database:
         sql = "UPDATE chats SET " + ", ".join(f"{k}=?" for k, _ in pairs) + " WHERE chat_id=?"
         with self.connect() as conn:
             conn.execute(sql, [v for _, v in pairs] + [chat_id])
+
+    def upsert_game_content(self, items: list[dict[str, Any]]) -> int:
+        if not items:
+            return 0
+        now = int(time.time())
+        rows = []
+        for item in items:
+            content_type = str(item.get("content_type") or "").strip()
+            content_key = str(item.get("content_key") or "").strip()
+            if not content_type or not content_key:
+                continue
+            rows.append((
+                content_type,
+                content_key[:240],
+                int(item.get("difficulty", 0) or 0),
+                str(item.get("title") or "")[:1200],
+                str(item.get("answer") or "")[:500],
+                str(item.get("options") or "")[:4000],
+                str(item.get("clue1") or "")[:1400],
+                str(item.get("clue2") or "")[:1400],
+                str(item.get("clue3") or "")[:1400],
+                str(item.get("category") or "")[:200],
+                str(item.get("source") or "")[:100],
+                str(item.get("source_url") or "")[:1200],
+                int(item.get("fetched_at", now) or now),
+            ))
+        if not rows:
+            return 0
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO game_content(
+                    content_type,content_key,difficulty,title,answer,options,
+                    clue1,clue2,clue3,category,source,source_url,fetched_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(content_type,content_key) DO UPDATE SET
+                    difficulty=excluded.difficulty,
+                    title=excluded.title,
+                    answer=excluded.answer,
+                    options=excluded.options,
+                    clue1=excluded.clue1,
+                    clue2=excluded.clue2,
+                    clue3=excluded.clue3,
+                    category=excluded.category,
+                    source=excluded.source,
+                    source_url=excluded.source_url,
+                    fetched_at=excluded.fetched_at
+                """,
+                rows,
+            )
+        return len(rows)
+
+    def game_content_count(self, content_type: str) -> int:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM game_content WHERE content_type=?",
+                (content_type,),
+            ).fetchone()
+        return int(row["n"] or 0) if row else 0
+
+    def pick_game_content(
+        self,
+        content_type: str,
+        difficulty: int = 0,
+        exclude_key: str = "",
+    ) -> dict[str, Any] | None:
+        params: list[Any] = [content_type]
+        where = ["content_type=?"]
+        if difficulty:
+            where.append("(difficulty=0 OR difficulty=?)")
+            params.append(int(difficulty))
+        if exclude_key:
+            where.append("content_key<>?")
+            params.append(exclude_key)
+        with self.connect() as conn:
+            row = conn.execute(
+                f"""
+                SELECT *
+                FROM game_content
+                WHERE {' AND '.join(where)}
+                ORDER BY use_count ASC, last_used_at ASC, RANDOM()
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_game_content(self, content_type: str, limit: int = 1000) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM game_content
+                WHERE content_type=?
+                ORDER BY use_count ASC, last_used_at ASC
+                LIMIT ?
+                """,
+                (content_type, max(1, int(limit))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_game_content_used(self, content_type: str, content_key: str):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE game_content
+                SET use_count=use_count+1,last_used_at=?
+                WHERE content_type=? AND content_key=?
+                """,
+                (int(time.time()), content_type, content_key),
+            )
+
+    def set_game_content_meta(self, key: str, value: str):
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO game_content_meta(meta_key,meta_value)
+                VALUES(?,?)
+                ON CONFLICT(meta_key) DO UPDATE SET meta_value=excluded.meta_value
+                """,
+                (key, value),
+            )
+
+    def get_game_content_meta(self, key: str, default: str = "") -> str:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT meta_value FROM game_content_meta WHERE meta_key=?",
+                (key,),
+            ).fetchone()
+        return str(row["meta_value"]) if row else default
 
     def touch_user(self, chat_id: int, user: dict, kind: str):
         now = int(time.time())
