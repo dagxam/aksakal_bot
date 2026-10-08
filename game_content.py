@@ -355,7 +355,7 @@ class GameContentUpdater:
         return items
 
     def _people_content(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        items: list[dict[str, Any]] = []
+        unique: list[dict[str, Any]] = []
         seen = set()
         for row in rows:
             uri = self._value(row, "person")
@@ -364,11 +364,34 @@ class GameContentUpdater:
             seen.add(uri)
             name = self._clean_label(self._value(row, "personLabel"))
             occupation = self._clean_label(self._value(row, "occupationLabel"))
+            if name and len(name.split()) >= 2 and occupation:
+                unique.append(row)
+
+        occupations = [
+            self._clean_label(self._value(row, "occupationLabel"))
+            for row in unique
+            if self._clean_label(self._value(row, "occupationLabel"))
+        ]
+        countries = [
+            self._clean_label(self._value(row, "countryLabel"))
+            for row in unique
+            if self._clean_label(self._value(row, "countryLabel"))
+        ]
+
+        items: list[dict[str, Any]] = []
+        for row in unique:
+            uri = self._value(row, "person")
+            name = self._clean_label(self._value(row, "personLabel"))
+            occupation = self._clean_label(self._value(row, "occupationLabel"))
             country = self._clean_label(self._value(row, "countryLabel"))
             year = self._birth_year(self._value(row, "birth"))
-            if not name or len(name.split()) < 2 or not occupation:
-                continue
+            try:
+                sitelinks = int(float(self._value(row, "sitelinks") or "20"))
+            except ValueError:
+                sitelinks = 20
+            difficulty = 1 if sitelinks >= 100 else 2 if sitelinks >= 50 else 3
             qid = self._qid(uri)
+            source_url = f"https://www.wikidata.org/wiki/{qid}" if qid else ""
             clues = [
                 f"Этот человек известен как {occupation.lower()}.",
                 f"Связан с государством {country}." if country else "Это известный человек.",
@@ -377,15 +400,63 @@ class GameContentUpdater:
             items.append({
                 "content_type": "whoami",
                 "content_key": qid or name,
-                "difficulty": 0,
+                "difficulty": difficulty,
                 "answer": name,
                 "clue1": clues[0],
                 "clue2": clues[1],
                 "clue3": clues[2],
                 "category": "известные люди",
                 "source": self.SOURCE,
-                "source_url": f"https://www.wikidata.org/wiki/{qid}" if qid else "",
+                "source_url": source_url,
             })
+
+            items.append({
+                "content_type": "quiz",
+                "content_key": f"person-job:{qid}",
+                "difficulty": 2,
+                "title": f"Кем известен {name}?",
+                "answer": occupation,
+                "options": self._options(occupation, occupations),
+                "category": "личности · профессии",
+                "source": self.SOURCE,
+                "source_url": source_url,
+            })
+
+            if country:
+                items.append({
+                    "content_type": "quiz",
+                    "content_key": f"person-country:{qid}",
+                    "difficulty": 2,
+                    "title": f"С каким государством связан {name} по гражданству?",
+                    "answer": country,
+                    "options": self._options(country, countries),
+                    "category": "личности · страны",
+                    "source": self.SOURCE,
+                    "source_url": source_url,
+                })
+
+            if year and year.isdigit():
+                year_num = int(year)
+                year_options = [
+                    str(year_num),
+                    str(year_num - 1),
+                    str(year_num + 1),
+                    str(year_num + 5),
+                    str(year_num - 5),
+                    str(year_num + 10),
+                    str(year_num - 10),
+                ]
+                items.append({
+                    "content_type": "quiz",
+                    "content_key": f"person-birth:{qid}",
+                    "difficulty": 3,
+                    "title": f"В каком году родился {name}?",
+                    "answer": year,
+                    "options": self._options(year, year_options),
+                    "category": "личности · даты",
+                    "source": self.SOURCE,
+                    "source_url": source_url,
+                })
         return items
 
     def _city_content(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
